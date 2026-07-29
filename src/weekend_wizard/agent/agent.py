@@ -80,7 +80,9 @@ class WeekendWizardAgent:
                     "role": "system",
                     "content": (
                         "You are Weekend Wizard, a local AI assistant. Use the provided tools to answer "
-                        "the user's request. Only answer using the tool output information. If the tools "
+                        "the user's request. Only answer using the tool output information. "
+                        "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
+                        "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
                         "do not provide the needed information, state it clearly."
                     ),
                 },
@@ -144,6 +146,13 @@ class WeekendWizardAgent:
             if status_callback:
                 await status_callback("Performing self-reflection review...")
 
+            # Extract tool outputs for the QA reviewer to verify against
+            tool_outputs_list = []
+            for msg in messages:
+                if msg.get("role") == "tool":
+                    tool_outputs_list.append(f"[{msg.get('name')} output]: {msg.get('content')}")
+            tool_outputs_str = "\n".join(tool_outputs_list)
+
             last_answer = messages[-1].get("content") or ""
             reflection_prompt = [
                 {
@@ -151,14 +160,21 @@ class WeekendWizardAgent:
                     "content": (
                         "You are a quality assurance reviewer. Review the following draft response "
                         "against the original user query and the tool outputs obtained. Ensure all details are "
-                        "accurate, formatting is neat, and tone is highly friendly and helpful. Correct "
-                        "any inaccuracies, bad formatting, or errors. Do NOT mention that you are a QA reviewer or "
-                        "that you are doing a reflection pass. Output only the final improved version."
+                        "accurate, formatting is neat, and tone is highly friendly and helpful. "
+                        "IMPORTANT: If the tool output contains image URLs, make sure the raw URL is "
+                        "clearly included in your output as a plain text link (e.g. 'Image URL: https://...') "
+                        "so the user can copy/click it in their terminal. Do NOT delete URLs. "
+                        "Do NOT mention that you are a QA reviewer or that you are doing a reflection pass. "
+                        "Output only the final improved version."
                     ),
                 },
                 {
                     "role": "user",
-                    "content": f"Original query: {user_query}\n\nDraft Answer: {last_answer}",
+                    "content": (
+                        f"Original query: {user_query}\n\n"
+                        f"Tool Outputs:\n{tool_outputs_str}\n\n"
+                        f"Draft Answer:\n{last_answer}"
+                    ),
                 },
             ]
 

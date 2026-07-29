@@ -31,8 +31,10 @@ class WeekendWizardAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are Weekend Wizard, a local AI assistant. Use the provided tools to answer "
-                    "the user's request. Only answer using the tool output information. "
+                    "You are Weekend Wizard, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
+                    "The MCP server provides the following tools: 'get_weather', 'search_books', 'get_joke', 'get_dog_image', and 'get_trivia'. "
+                    "When the user asks about MCP tools, explain that you have access to these 5 tools via the Model Context Protocol. "
+                    "Only answer queries using the tool output information. "
                     "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
                     "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
                     "do not provide the needed information, state it clearly."
@@ -46,8 +48,10 @@ class WeekendWizardAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are Weekend Wizard, a local AI assistant. Use the provided tools to answer "
-                    "the user's request. Only answer using the tool output information. "
+                    "You are Weekend Wizard, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
+                    "The MCP server provides the following tools: 'get_weather', 'search_books', 'get_joke', 'get_dog_image', and 'get_trivia'. "
+                    "When the user asks about MCP tools, explain that you have access to these 5 tools via the Model Context Protocol. "
+                    "Only answer queries using the tool output information. "
                     "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
                     "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
                     "do not provide the needed information, state it clearly."
@@ -181,7 +185,7 @@ class WeekendWizardAgent:
             for msg in self.messages[: start_msg_count - 1]:
                 role = msg.get("role")
                 content = msg.get("content")
-                if content and role != "system":
+                if content and isinstance(role, str) and role != "system":
                     history_list.append(f"{role.upper()}: {content}")
             history_str = "\n".join(history_list)
 
@@ -190,25 +194,23 @@ class WeekendWizardAgent:
                 {
                     "role": "system",
                     "content": (
-                        "You are a quality assurance reviewer. Review the following draft response "
-                        "against the conversation history, user query, and the tool outputs obtained. Ensure all details are "
-                        "accurate, formatting is neat, and tone is highly friendly and helpful. "
-                        "IMPORTANT: If the user query is answering a trivia question or multiple choice query "
-                        "from the conversation history, evaluate if their answer is correct and verify it. "
-                        "IMPORTANT: If the tool output contains image URLs, make sure the raw URL is "
-                        "clearly included in your output as a plain text link (e.g. 'Image URL: https://...') "
-                        "so the user can copy/click it in their terminal. Do NOT delete URLs. "
-                        "Do NOT mention that you are a QA reviewer or that you are doing a reflection pass. "
-                        "Output only the final improved version."
+                        "You are a quality assurance reviewer. Review the draft response and output a refined version. "
+                        "Ensure the response is accurate, neat, and highly friendly. "
+                        "CRITICAL: Focus ONLY on answering the latest user query. Do NOT merge or repeat answers "
+                        "to previous queries from the conversation history unless specifically asked to do so. "
+                        "If the user query is answering a trivia question from history, check if they are correct. "
+                        "If the tool output contains image URLs, ensure the raw URL is included in the output as a "
+                        "plain text link (e.g. 'Image URL: https://...'). Do NOT delete URLs. "
+                        "Do NOT mention reflection or QA in the output. Output only the clean refined response."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
                         f"Conversation History:\n{history_str}\n\n"
-                        f"Original query: {user_query}\n\n"
+                        f"Latest User Query: {user_query}\n\n"
                         f"Tool Outputs in this turn:\n{tool_outputs_str}\n\n"
-                        f"Draft Answer:\n{last_answer}"
+                        f"Draft Response to refine:\n{last_answer}"
                     ),
                 },
             ]

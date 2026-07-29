@@ -1,0 +1,145 @@
+"""Command Line Interface for Weekend Wizard.
+
+Provides a CLI command for single-query runs and an interactive REPL mode.
+Uses typer for command definition and rich for beautiful terminal outputs.
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+import typer
+from rich.console import Console
+from rich.live import Live
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich.spinner import Spinner
+from rich.text import Text
+
+from weekend_wizard.agent.agent import WeekendWizardAgent
+from weekend_wizard.utils.config import get_settings
+
+app = typer.Typer(
+    name="weekend-wizard",
+    help="🧙 Weekend Wizard: An interactive local AI agent helper for your weekends.",
+    add_completion=False,
+)
+console = Console()
+
+
+class StatusIndicator:
+    """Helper to display updating progress messages with a spinner."""
+
+    def __init__(self, console: Console) -> None:
+        self.console = console
+        self.current_status = "Thinking..."
+        self._live: Live | None = None
+
+    def update(self, status: str) -> None:
+        self.current_status = status
+        if self._live:
+            self._live.update(self._render())
+
+    def _render(self) -> Panel:
+        return Panel(
+            Spinner("dots", text=Text(self.current_status, style="cyan")),
+            border_style="bold blue",
+            title="Wizard Action",
+            title_align="left",
+        )
+
+    def start(self) -> None:
+        self._live = Live(self._render(), console=self.console, refresh_per_second=10)
+        self._live.start()
+
+    def stop(self) -> None:
+        if self._live:
+            self._live.stop()
+            self._live = None
+
+
+async def run_agent_interactive(agent: WeekendWizardAgent, query: str) -> None:
+    """Run a single query and display step-by-step progress using Rich."""
+    indicator = StatusIndicator(console)
+    indicator.start()
+
+    async def callback(msg: str) -> None:
+        indicator.update(msg)
+
+    try:
+        response = await agent.run_query(query, status_callback=callback)
+        indicator.stop()
+
+        # Display the result in a beautiful Markdown panel
+        console.print("\n")
+        console.print(
+            Panel(
+                Markdown(response),
+                title="🧙 Weekend Wizard Response",
+                border_style="green",
+                padding=(1, 2),
+            )
+        )
+        console.print("\n")
+    except Exception as e:
+        indicator.stop()
+        console.print(
+            Panel(f"[bold red]Error:[/] {str(e)}", title="Execution Failed", border_style="red")
+        )
+
+
+@app.command()
+def query(
+    user_query: str | None = typer.Argument(
+        None, help="Natural language prompt for the wizard. If omitted, starts interactive mode."
+    ),
+    model: str | None = typer.Option(
+        None, "--model", "-m", help="Override the Ollama model (default is mistral:7b)."
+    ),
+) -> None:
+    """Run Weekend Wizard to answer your weekend questions."""
+    settings = get_settings()
+    if model:
+        settings.ollama_model = model
+
+    console.print(
+        Panel(
+            f"[bold gold1]🧙 Weekend Wizard[/]\n"
+            f"[dim]Model: {settings.ollama_model} | URL: {settings.ollama_base_url}[/]\n\n"
+            f"Ask me about weather, book recommendations, trivia, jokes, or dog pictures!",
+            border_style="bold gold1",
+            padding=(1, 2),
+        )
+    )
+
+    agent = WeekendWizardAgent()
+
+    if user_query:
+        # Single query mode
+        asyncio.run(run_agent_interactive(agent, user_query))
+    else:
+        # Interactive REPL mode
+        console.print(
+            "[bold yellow]Entering Interactive Mode. Type 'exit' or 'quit' to end session.[/]\n"
+        )
+        while True:
+            try:
+                prompt = console.input("[bold purple]You ──► [/]")
+                if prompt.strip().lower() in ("exit", "quit"):
+                    console.print("[bold green]Goodbye! Have a great weekend! 🧙[/]")
+                    break
+                if not prompt.strip():
+                    continue
+                asyncio.run(run_agent_interactive(agent, prompt))
+            except (KeyboardInterrupt, EOFError):
+                console.print("\n[bold green]Goodbye! Have a great weekend! 🧙[/]")
+                break
+
+
+def main() -> None:
+    """App entrypoint."""
+    app()
+
+
+if __name__ == "__main__":
+    main()

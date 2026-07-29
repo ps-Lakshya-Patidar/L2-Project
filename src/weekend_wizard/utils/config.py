@@ -43,7 +43,7 @@ class Settings(BaseSettings):
         description="Base URL for the Ollama API server.",
     )
     ollama_model: str = Field(
-        default="mistral:7b",
+        default="llama3.2:3b",
         description="Ollama model to use for reasoning.",
     )
     ollama_timeout: float = Field(

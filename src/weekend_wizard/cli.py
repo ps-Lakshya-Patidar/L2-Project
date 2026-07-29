@@ -7,6 +7,13 @@ Uses typer for command definition and rich for beautiful terminal outputs.
 from __future__ import annotations
 
 import asyncio
+import sys
+
+# Force UTF-8 output on Windows for emojis and special characters
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8")
 
 import typer
 from rich.console import Console

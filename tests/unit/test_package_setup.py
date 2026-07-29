@@ -17,9 +17,9 @@ class TestPackageSetup:
 
     def test_subpackages_importable(self) -> None:
         """All subpackages should be importable without errors."""
-        import weekend_wizard.agent
-        import weekend_wizard.mcp_server
-        import weekend_wizard.models
-        import weekend_wizard.prompts
-        import weekend_wizard.tools
-        import weekend_wizard.utils
+        import weekend_wizard.agent  # noqa: F401
+        import weekend_wizard.mcp_server  # noqa: F401
+        import weekend_wizard.models  # noqa: F401
+        import weekend_wizard.prompts  # noqa: F401
+        import weekend_wizard.tools  # noqa: F401
+        import weekend_wizard.utils  # noqa: F401

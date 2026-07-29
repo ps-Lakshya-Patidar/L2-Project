@@ -23,7 +23,18 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core dependencies will be added in Phase 3
+    # --- AI / Agent ---
+    "ollama>=0.4",              # Ollama Python client
+    "mcp[cli]>=1.0",            # Model Context Protocol SDK + CLI tools
+    # --- HTTP / Networking ---
+    "httpx>=0.27",              # Async HTTP client for API calls
+    "tenacity>=8.2",            # Retry with exponential backoff
+    # --- Data / Config ---
+    "pydantic>=2.5",            # Data validation & serialization
+    "pydantic-settings>=2.1",   # Settings from .env + env vars
+    # --- CLI / UX ---
+    "typer>=0.9",               # CLI framework with type hints
+    "rich>=13.0",               # Beautiful terminal output
 ]
 
 [project.optional-dependencies]

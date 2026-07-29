@@ -1,10 +1,6 @@
 # Weekend Wizard - Pinned Runtime Dependencies
 # ==============================================
-# Generated from: pip freeze (Phase 3)
 # Install: pip install -r requirements.txt
-#
-# NOTE: Dev dependencies (pytest, ruff, mypy, etc.) are in
-#       pyproject.toml[dev]. Install with: pip install -e ".[dev]"
 
 # --- Direct dependencies ---
 httpx==0.28.1

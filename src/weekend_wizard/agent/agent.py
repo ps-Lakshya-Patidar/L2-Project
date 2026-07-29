@@ -27,6 +27,33 @@ class WeekendWizardAgent:
         self.server_params = StdioServerParameters(
             command=sys.executable, args=["-m", "weekend_wizard.mcp_server"], env=None
         )
+        self.messages: list[dict[str, Any]] = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Weekend Wizard, a local AI assistant. Use the provided tools to answer "
+                    "the user's request. Only answer using the tool output information. "
+                    "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
+                    "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
+                    "do not provide the needed information, state it clearly."
+                ),
+            }
+        ]
+
+    def reset(self) -> None:
+        """Reset the conversation history."""
+        self.messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are Weekend Wizard, a local AI assistant. Use the provided tools to answer "
+                    "the user's request. Only answer using the tool output information. "
+                    "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
+                    "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
+                    "do not provide the needed information, state it clearly."
+                ),
+            }
+        ]
 
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True
@@ -47,6 +74,9 @@ class WeekendWizardAgent:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
         if status_callback:
             await status_callback("Connecting to tool server...")
+
+        # Append new user message to conversation history
+        self.messages.append({"role": "user", "content": user_query})
 
         async with (
             stdio_client(self.server_params) as (read_stream, write_stream),
@@ -75,35 +105,24 @@ class WeekendWizardAgent:
                     }
                 )
 
-            messages: list[dict[str, Any]] = [
-                {
-                    "role": "system",
-                    "content": (
-                        "You are Weekend Wizard, a local AI assistant. Use the provided tools to answer "
-                        "the user's request. Only answer using the tool output information. "
-                        "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
-                        "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
-                        "do not provide the needed information, state it clearly."
-                    ),
-                },
-                {"role": "user", "content": user_query},
-            ]
-
             # Max iterations to prevent infinite tool calling loops
             max_iterations = 5
             iteration = 0
+
+            # Tracks how many messages were added in this specific turn
+            start_msg_count = len(self.messages)
 
             while iteration < max_iterations:
                 iteration += 1
                 if status_callback:
                     await status_callback(f"Reasoning (Step {iteration})...")
 
-                # Invoke local LLM
-                response = self._call_ollama_with_retry(messages, tools=ollama_tools)
+                # Invoke local LLM using the full stateful messages history
+                response = self._call_ollama_with_retry(self.messages, tools=ollama_tools)
                 message = response.message
 
                 # Add response to messages history
-                messages.append(
+                self.messages.append(
                     {
                         "role": "assistant",
                         "content": message.content or "",
@@ -140,27 +159,42 @@ class WeekendWizardAgent:
                         await status_callback(f"Received output from '{tool_name}'")
 
                     # Append tool response
-                    messages.append({"role": "tool", "content": result_text, "name": tool_name})
+                    self.messages.append(
+                        {"role": "tool", "content": result_text, "name": tool_name}
+                    )
 
             # --- REFLECTION PASS ---
             if status_callback:
                 await status_callback("Performing self-reflection review...")
 
-            # Extract tool outputs for the QA reviewer to verify against
-            tool_outputs_list = []
-            for msg in messages:
+            # Extract tool outputs *only* from the current turn
+            current_turn_tool_outputs = []
+            for msg in self.messages[start_msg_count:]:
                 if msg.get("role") == "tool":
-                    tool_outputs_list.append(f"[{msg.get('name')} output]: {msg.get('content')}")
-            tool_outputs_str = "\n".join(tool_outputs_list)
+                    current_turn_tool_outputs.append(
+                        f"[{msg.get('name')} output]: {msg.get('content')}"
+                    )
+            tool_outputs_str = "\n".join(current_turn_tool_outputs)
 
-            last_answer = messages[-1].get("content") or ""
+            # Build history string of the conversation prior to the latest user prompt
+            history_list = []
+            for msg in self.messages[: start_msg_count - 1]:
+                role = msg.get("role")
+                content = msg.get("content")
+                if content and role != "system":
+                    history_list.append(f"{role.upper()}: {content}")
+            history_str = "\n".join(history_list)
+
+            last_answer = self.messages[-1].get("content") or ""
             reflection_prompt = [
                 {
                     "role": "system",
                     "content": (
                         "You are a quality assurance reviewer. Review the following draft response "
-                        "against the original user query and the tool outputs obtained. Ensure all details are "
+                        "against the conversation history, user query, and the tool outputs obtained. Ensure all details are "
                         "accurate, formatting is neat, and tone is highly friendly and helpful. "
+                        "IMPORTANT: If the user query is answering a trivia question or multiple choice query "
+                        "from the conversation history, evaluate if their answer is correct and verify it. "
                         "IMPORTANT: If the tool output contains image URLs, make sure the raw URL is "
                         "clearly included in your output as a plain text link (e.g. 'Image URL: https://...') "
                         "so the user can copy/click it in their terminal. Do NOT delete URLs. "
@@ -171,8 +205,9 @@ class WeekendWizardAgent:
                 {
                     "role": "user",
                     "content": (
+                        f"Conversation History:\n{history_str}\n\n"
                         f"Original query: {user_query}\n\n"
-                        f"Tool Outputs:\n{tool_outputs_str}\n\n"
+                        f"Tool Outputs in this turn:\n{tool_outputs_str}\n\n"
                         f"Draft Answer:\n{last_answer}"
                     ),
                 },
@@ -180,5 +215,8 @@ class WeekendWizardAgent:
 
             ref_resp = self._call_ollama_with_retry(reflection_prompt)
             final_answer = ref_resp.message.content or last_answer
+
+            # Update the last assistant response with the QA refined answer
+            self.messages[-1]["content"] = final_answer
 
             return final_answer

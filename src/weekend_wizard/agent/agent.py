@@ -199,8 +199,8 @@ class WeekendWizardAgent:
                         "CRITICAL: Focus ONLY on answering the latest user query. Do NOT merge or repeat answers "
                         "to previous queries from the conversation history unless specifically asked to do so. "
                         "If the user query is answering a trivia question from history, check if they are correct. "
-                        "If the tool output contains image URLs, ensure the raw URL is included in the output as a "
-                        "plain text link (e.g. 'Image URL: https://...'). Do NOT delete URLs. "
+                        "If the current turn's tool outputs contain a dog image URL, ensure that exact URL is "
+                        "preserved in the final response. Do not add or hallucinate placeholder URLs. "
                         "Do NOT mention reflection or QA in the output. Output only the clean refined response."
                     ),
                 },

@@ -18,6 +18,29 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from weekend_wizard.utils.config import get_settings
 
 
+class ToolFunction:
+    def __init__(self, name: str, arguments: dict[str, Any]):
+        self.name = name
+        self.arguments = arguments
+
+
+class ToolCall:
+    def __init__(self, function: ToolFunction, id: str = "call_dummy"):
+        self.id = id
+        self.function = function
+
+
+class LLMMessage:
+    def __init__(self, content: str | None, tool_calls: list[ToolCall] | None = None):
+        self.content = content
+        self.tool_calls = tool_calls or []
+
+
+class LLMResponse:
+    def __init__(self, message: LLMMessage):
+        self.message = message
+
+
 class WeekendWizardAgent:
     """Agent orchestrator connecting Ollama to the MCP Tool Server."""
 
@@ -32,12 +55,12 @@ class WeekendWizardAgent:
                 "role": "system",
                 "content": (
                     "You are Weekend Wizard, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
-                    "The MCP server provides the following tools: 'get_weather', 'search_books', 'get_joke', 'get_dog_image', and 'get_trivia'. "
-                    "When the user asks about MCP tools, explain that you have access to these 5 tools via the Model Context Protocol. "
-                    "Only answer queries using the tool output information. "
-                    "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
-                    "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
-                    "do not provide the needed information, state it clearly."
+                    "The MCP server provides the following tools: 'get_weather', 'search_books', and 'discover_events'. "
+                    "When the user asks about available tools, explain that you have access to these 3 tools via the Model Context Protocol. "
+                    "For weather, book recommendations, or event discovery requests, you MUST call the appropriate tool and only answer using the "
+                    "information returned by the tool. If the user query is about topics you do not have tools for (such as general news, "
+                    "math calculations, or general chit-chat), do NOT invoke any tools. Instead, reply directly to the user in plain text explaining "
+                    "that you do not have access to that information. If the tools do not provide the needed information, state it clearly."
                 ),
             }
         ]
@@ -49,30 +72,179 @@ class WeekendWizardAgent:
                 "role": "system",
                 "content": (
                     "You are Weekend Wizard, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
-                    "The MCP server provides the following tools: 'get_weather', 'search_books', 'get_joke', 'get_dog_image', and 'get_trivia'. "
-                    "When the user asks about MCP tools, explain that you have access to these 5 tools via the Model Context Protocol. "
-                    "Only answer queries using the tool output information. "
-                    "When a tool output contains URLs (like image URLs), always include the raw URL as a plain "
-                    "text link (e.g. 'Image URL: https://...') so the user can access it. If the tools "
-                    "do not provide the needed information, state it clearly."
+                    "The MCP server provides the following tools: 'get_weather', 'search_books', and 'discover_events'. "
+                    "When the user asks about available tools, explain that you have access to these 3 tools via the Model Context Protocol. "
+                    "For weather, book recommendations, or event discovery requests, you MUST call the appropriate tool and only answer using the "
+                    "information returned by the tool. If the user query is about topics you do not have tools for (such as general news, "
+                    "math calculations, or general chit-chat), do NOT invoke any tools. Instead, reply directly to the user in plain text explaining "
+                    "that you do not have access to that information. If the tools do not provide the needed information, state it clearly."
                 ),
             }
         ]
 
+    def _prepare_groq_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Preprocess messages into OpenAI/Groq compatible schemas (preserving tool IDs)."""
+        groq_msgs = []
+        last_tool_ids = {}
+
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            if role == "assistant" and msg.get("tool_calls"):
+                formatted_calls = []
+                for idx, tc in enumerate(msg["tool_calls"]):
+                    call_id = getattr(tc, "id", f"call_gen_{idx}")
+                    name = tc.function.name
+                    last_tool_ids[name] = call_id
+                    formatted_calls.append(
+                        {
+                            "id": call_id,
+                            "type": "function",
+                            "function": {
+                                "name": name,
+                                "arguments": json.dumps(tc.function.arguments),
+                            },
+                        }
+                    )
+                groq_msgs.append(
+                    {
+                        "role": "assistant",
+                        "content": content or None,
+                        "tool_calls": formatted_calls,
+                    }
+                )
+
+            elif role == "tool":
+                name = msg.get("name")
+                call_id = last_tool_ids.get(name, "call_gen_0")
+                groq_msgs.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "name": name,
+                        "content": content,
+                    }
+                )
+            else:
+                groq_msgs.append(msg)
+
+        return groq_msgs
+
+    def _prepare_ollama_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Preprocess messages into Ollama-compatible message schemas."""
+        ollama_msgs = []
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+
+            if role == "assistant" and msg.get("tool_calls"):
+                formatted_calls = []
+                for tc in msg["tool_calls"]:
+                    formatted_calls.append(
+                        {
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                        }
+                    )
+                ollama_msgs.append(
+                    {
+                        "role": "assistant",
+                        "content": content or "",
+                        "tool_calls": formatted_calls,
+                    }
+                )
+            else:
+                ollama_msgs.append(msg)
+        return ollama_msgs
+
     @retry(
         stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True
     )
-    def _call_ollama_with_retry(
+    def _call_llm_with_retry(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
-    ) -> Any:
-        """Helper to invoke Ollama with exponential backoff on failure."""
-        kwargs: dict[str, Any] = {
-            "model": self.settings.ollama_model,
-            "messages": messages,
-        }
-        if tools:
-            kwargs["tools"] = tools
-        return ollama.chat(**kwargs)
+    ) -> LLMResponse:
+        """Helper to invoke the configured LLM provider with exponential backoff on failure."""
+        import httpx
+
+        provider = self.settings.llm_provider.lower().strip()
+
+        if provider == "groq" and self.settings.groq_api_key:
+            # 1. Format messages for Groq
+            groq_messages = self._prepare_groq_messages(messages)
+
+            # 2. Invoke Groq API
+            url = "https://api.groq.com/openai/v1/chat/completions"
+            headers = {
+                "Authorization": f"Bearer {self.settings.groq_api_key}",
+                "Content-Type": "application/json",
+            }
+            payload = {
+                "model": self.settings.groq_model,
+                "messages": groq_messages,
+            }
+            if tools:
+                payload["tools"] = tools
+                payload["tool_choice"] = "auto"
+
+            with httpx.Client(timeout=30.0) as client:
+                resp = client.post(url, json=payload, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
+
+            choice = data["choices"][0]["message"]
+            content = choice.get("content")
+
+            # Parse tool calls
+            raw_tool_calls = choice.get("tool_calls", [])
+            tool_calls = []
+            for tc in raw_tool_calls:
+                func_data = tc.get("function", {})
+                name = func_data.get("name")
+                args_str = func_data.get("arguments", "{}")
+                try:
+                    args = json.loads(args_str)
+                except Exception:
+                    args = {}
+                tool_calls.append(
+                    ToolCall(
+                        id=tc.get("id", "call_gen"),
+                        function=ToolFunction(name=name, arguments=args),
+                    )
+                )
+
+            return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
+
+        else:
+            # Default to Ollama
+            ollama_messages = self._prepare_ollama_messages(messages)
+
+            kwargs: dict[str, Any] = {
+                "model": self.settings.ollama_model,
+                "messages": ollama_messages,
+            }
+            if tools:
+                kwargs["tools"] = tools
+
+            resp = ollama.chat(**kwargs)
+            content = resp.message.content
+
+            tool_calls = []
+            if resp.message.tool_calls:
+                for tc in resp.message.tool_calls:
+                    args = tc.function.arguments
+                    if isinstance(args, str):
+                        try:
+                            args = json.loads(args)
+                        except Exception:
+                            args = {}
+                    tool_calls.append(
+                        ToolCall(function=ToolFunction(name=tc.function.name, arguments=args))
+                    )
+
+            return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
 
     async def run_query(self, user_query: str, status_callback: Any = None) -> str:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
@@ -122,7 +294,7 @@ class WeekendWizardAgent:
                     await status_callback(f"Reasoning (Step {iteration})...")
 
                 # Invoke local LLM using the full stateful messages history
-                response = self._call_ollama_with_retry(self.messages, tools=ollama_tools)
+                response = self._call_llm_with_retry(self.messages, tools=ollama_tools)
                 message = response.message
 
                 # Add response to messages history
@@ -180,15 +352,6 @@ class WeekendWizardAgent:
                     )
             tool_outputs_str = "\n".join(current_turn_tool_outputs)
 
-            # Build history string of the conversation prior to the latest user prompt
-            history_list = []
-            for msg in self.messages[: start_msg_count - 1]:
-                role = msg.get("role")
-                content = msg.get("content")
-                if content and isinstance(role, str) and role != "system":
-                    history_list.append(f"{role.upper()}: {content}")
-            history_str = "\n".join(history_list)
-
             last_answer = self.messages[-1].get("content") or ""
             reflection_prompt = [
                 {
@@ -196,18 +359,14 @@ class WeekendWizardAgent:
                     "content": (
                         "You are a quality assurance reviewer. Review the draft response and output a refined version. "
                         "Ensure the response is accurate, neat, and highly friendly. "
-                        "CRITICAL: Focus ONLY on answering the latest user query. Do NOT merge or repeat answers "
-                        "to previous queries from the conversation history unless specifically asked to do so. "
-                        "If the user query is answering a trivia question from history, check if they are correct. "
-                        "If the current turn's tool outputs contain a dog image URL, ensure that exact URL is "
-                        "preserved in the final response. Do not add or hallucinate placeholder URLs. "
+                        "Make sure your output ONLY answers the latest user query. Do NOT merge, summarize, or repeat "
+                        "unrelated items from previous turns. "
                         "Do NOT mention reflection or QA in the output. Output only the clean refined response."
                     ),
                 },
                 {
                     "role": "user",
                     "content": (
-                        f"Conversation History:\n{history_str}\n\n"
                         f"Latest User Query: {user_query}\n\n"
                         f"Tool Outputs in this turn:\n{tool_outputs_str}\n\n"
                         f"Draft Response to refine:\n{last_answer}"
@@ -215,7 +374,7 @@ class WeekendWizardAgent:
                 },
             ]
 
-            ref_resp = self._call_ollama_with_retry(reflection_prompt)
+            ref_resp = self._call_llm_with_retry(reflection_prompt)
             final_answer = ref_resp.message.content or last_answer
 
             # Update the last assistant response with the QA refined answer

@@ -51,6 +51,20 @@ class Settings(BaseSettings):
         description="Timeout in seconds for Ollama API calls.",
     )
 
+    # --- Groq ---
+    llm_provider: str = Field(
+        default="ollama",
+        description="LLM Provider to use ('ollama' or 'groq').",
+    )
+    groq_api_key: str | None = Field(
+        default=None,
+        description="API key for Groq Cloud.",
+    )
+    groq_model: str = Field(
+        default="llama-3.3-70b-versatile",
+        description="Groq model to use.",
+    )
+
     # --- MCP Server ---
     mcp_server_host: str = Field(
         default="localhost",

@@ -1,20 +1,64 @@
 """Service implementations for the Weekend Wizard tools.
 
-Calls external free APIs: Open-Meteo, Open Library, JokeAPI, Dog CEO, and Open Trivia.
+Calls external free APIs: Open-Meteo, Open Library, and DuckDuckGo search.
 """
 
 from __future__ import annotations
-
+import html
+import re
 from typing import Any
-
 import httpx
+
+# Map of common regions/states to their capital or major city for weather lookup
+REGION_FALLBACKS = {
+    "assam": ("Guwahati", "Assam, India"),
+    "bihar": ("Patna", "Bihar, India"),
+    "goa": ("Panaji", "Goa, India"),
+    "gujarat": ("Ahmedabad", "Gujarat, India"),
+    "haryana": ("Chandigarh", "Haryana, India"),
+    "himachal pradesh": ("Shimla", "Himachal Pradesh, India"),
+    "jharkhand": ("Ranchi", "Jharkhand, India"),
+    "karnataka": ("Bengaluru", "Karnataka, India"),
+    "kerala": ("Thiruvananthapuram", "Kerala, India"),
+    "madhya pradesh": ("Bhopal", "Madhya Pradesh, India"),
+    "maharashtra": ("Mumbai", "Maharashtra, India"),
+    "manipur": ("Imphal", "Manipur, India"),
+    "meghalaya": ("Shillong", "Meghalaya, India"),
+    "mizoram": ("Aizawl", "Mizoram, India"),
+    "nagaland": ("Kohima", "Nagaland, India"),
+    "odisha": ("Bhubaneswar", "Odisha, India"),
+    "punjab": ("Chandigarh", "Punjab, India"),
+    "rajasthan": ("Jaipur", "Rajasthan, India"),
+    "sikkim": ("Gangtok", "Sikkim, India"),
+    "tamil nadu": ("Chennai", "Tamil Nadu, India"),
+    "telangana": ("Hyderabad", "Telangana, India"),
+    "tripura": ("Agartala", "Tripura, India"),
+    "uttar pradesh": ("Lucknow", "Uttar Pradesh, India"),
+    "uttarakhand": ("Dehradun", "Uttarakhand, India"),
+    "west bengal": ("Kolkata", "West Bengal, India"),
+    "kashmir": ("Srinagar", "Jammu and Kashmir, India"),
+    "jammu": ("Jammu", "Jammu and Kashmir, India"),
+    "ladakh": ("Leh", "Ladakh, India"),
+    "texas": ("Houston", "Texas, USA"),
+    "california": ("Los Angeles", "California, USA"),
+    "florida": ("Miami", "Florida, USA"),
+}
 
 
 async def get_weather_data(city: str) -> dict[str, Any]:
     """Fetch current weather for a city using Open-Meteo Geocoding and Forecast APIs."""
+    search_name = city.lower().strip()
+    query_city = city
+    note = None
+
+    if search_name in REGION_FALLBACKS:
+        fallback_city, region_name = REGION_FALLBACKS[search_name]
+        query_city = fallback_city
+        note = f"Showing weather for {fallback_city} (major city/capital of {region_name})"
+
     async with httpx.AsyncClient() as client:
         # 1. Geocode city name to lat/lon
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={city}&count=1&language=en&format=json"
+        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={query_city}&count=1&language=en&format=json"
         geo_resp = await client.get(geo_url)
         geo_resp.raise_for_status()
         geo_data = geo_resp.json()
@@ -28,8 +72,11 @@ async def get_weather_data(city: str) -> dict[str, Any]:
         name = result.get("name", city)
         country = result.get("country", "")
 
-        # 2. Get current weather
-        weather_url = f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}&current_weather=true&temperature_unit=celsius"
+        # 2. Get current weather and hourly forecast for precipitation
+        weather_url = (
+            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+            f"&current_weather=true&hourly=precipitation_probability,rain&temperature_unit=celsius"
+        )
         weather_resp = await client.get(weather_url)
         weather_resp.raise_for_status()
         weather_data = weather_resp.json()
@@ -39,7 +86,40 @@ async def get_weather_data(city: str) -> dict[str, Any]:
         windspeed = current.get("windspeed")
         weathercode = current.get("weathercode")
 
-        return {
+        # Parse hourly rain forecast for the next 12 hours
+        hourly = weather_data.get("hourly", {})
+        hourly_times = hourly.get("time", [])
+        hourly_rain = hourly.get("rain", [])
+        hourly_prob = hourly.get("precipitation_probability", [])
+
+        any_rain_expected = False
+        rain_probability_max = 0
+        rain_sum_mm = 0.0
+
+        if hourly_rain and hourly_prob:
+            current_time_str = current.get("time")
+            start_idx = 0
+            if current_time_str in hourly_times:
+                start_idx = hourly_times.index(current_time_str)
+            else:
+                try:
+                    from datetime import datetime
+
+                    if current_time_str:
+                        curr_hour = datetime.fromisoformat(current_time_str).hour
+                        start_idx = min(curr_hour, len(hourly_times) - 1)
+                except Exception:
+                    start_idx = 0
+
+            # Slice next 12 hours
+            next_12_rain = hourly_rain[start_idx : start_idx + 12]
+            next_12_prob = hourly_prob[start_idx : start_idx + 12]
+
+            any_rain_expected = any(r > 0.1 for r in next_12_rain)
+            rain_probability_max = max(next_12_prob) if next_12_prob else 0
+            rain_sum_mm = round(sum(next_12_rain), 2) if next_12_rain else 0.0
+
+        res = {
             "city": name,
             "country": country,
             "latitude": lat,
@@ -47,7 +127,15 @@ async def get_weather_data(city: str) -> dict[str, Any]:
             "temperature_c": temp,
             "windspeed_kmh": windspeed,
             "weather_code": weathercode,
+            "forecast_next_12h": {
+                "any_rain_expected": any_rain_expected,
+                "max_rain_probability_percent": rain_probability_max,
+                "total_expected_rain_mm": rain_sum_mm,
+            },
         }
+        if note:
+            res["note"] = note
+        return res
 
 
 async def search_books_data(query: str) -> list[dict[str, Any]]:
@@ -72,65 +160,40 @@ async def search_books_data(query: str) -> list[dict[str, Any]]:
         return books
 
 
-async def get_joke_data(category: str = "Any") -> dict[str, Any]:
-    """Fetch a joke from JokeAPI."""
+async def discover_events_data(city: str, query: str | None = None) -> list[dict[str, str]]:
+    """Search for live events happening in a specific location using DuckDuckGo search."""
+    headers = {
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/120.0.0.0 Safari/537.36"
+        )
+    }
+    if query:
+        search_query = f"{query} in {city} this weekend"
+    else:
+        search_query = f"events in {city} this weekend"
+
+    url = f"https://html.duckduckgo.com/html/?q={search_query}"
+
     async with httpx.AsyncClient() as client:
-        url = f"https://v2.jokeapi.dev/joke/{category}?safe-mode"
-        resp = await client.get(url)
+        resp = await client.get(url, headers=headers)
         resp.raise_for_status()
-        data = resp.json()
 
-        if data.get("error"):
-            return {"error": data.get("message", "Unknown JokeAPI error.")}
+    blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
+    results = []
 
-        if data.get("type") == "single":
-            return {"joke": data.get("joke")}
-        else:
-            return {"setup": data.get("setup"), "delivery": data.get("delivery")}
+    for block in blocks[1:6]:  # Extract top 5 results
+        title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
+        snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
 
+        if title_match and snippet_match:
+            title = re.sub(r"<[^>]*>", "", title_match.group(1)).strip()
+            snippet = re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip()
 
-async def get_dog_image_data(breed: str | None = None) -> dict[str, Any]:
-    """Fetch a random dog image from Dog CEO API, optionally filtered by breed."""
-    async with httpx.AsyncClient() as client:
-        if breed:
-            # Clean breed string (lowercase, replace spaces with sub-breed format)
-            breed_path = breed.lower().strip().replace(" ", "/")
-            url = f"https://dog.ceo/api/breed/{breed_path}/images/random"
-        else:
-            url = "https://dog.ceo/api/breeds/image/random"
+            title = html.unescape(title)
+            snippet = html.unescape(snippet)
 
-        resp = await client.get(url)
-        if resp.status_code == 404 and breed:
-            # Fallback to general random dog if breed not found
-            url = "https://dog.ceo/api/breeds/image/random"
-            resp = await client.get(url)
+            results.append({"source": title, "summary": snippet})
 
-        resp.raise_for_status()
-        data = resp.json()
-        return {"image_url": data.get("message")}
-
-
-async def get_trivia_data(difficulty: str | None = None) -> dict[str, Any]:
-    """Fetch a trivia question from Open Trivia DB."""
-    async with httpx.AsyncClient() as client:
-        url = "https://opentdb.com/api.php?amount=1"
-        if difficulty:
-            url += f"&difficulty={difficulty.lower()}"
-
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
-
-        results = data.get("results", [])
-        if not results:
-            return {"error": "No trivia questions returned."}
-
-        question_info = results[0]
-        return {
-            "category": question_info.get("category"),
-            "type": question_info.get("type"),
-            "difficulty": question_info.get("difficulty"),
-            "question": question_info.get("question"),
-            "correct_answer": question_info.get("correct_answer"),
-            "incorrect_answers": question_info.get("incorrect_answers"),
-        }
+    return results

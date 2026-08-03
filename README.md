@@ -10,9 +10,7 @@
 |------|-----|-------------|
 | 🌤️ Weather | Open-Meteo | Get current weather for any city |
 | 📚 Books | Open Library | Search and recommend books by topic, author, or title |
-| 😂 Jokes | JokeAPI | Fetch random jokes by category (Programming, Misc, etc.) |
-| 🐕 Dog Images | Dog CEO | Fetch random dog pictures by breed |
-| 🧠 Trivia | Open Trivia DB | Serve trivia questions and evaluate your answers |
+| 🎟️ Events | DuckDuckGo | Discover live events, concerts, or exhibitions happening in a specific location |
 
 ## 🏗️ Architecture
 
@@ -62,7 +60,6 @@ Launch the wizard directly to enter stateful interactive mode:
 ```bash
 weekend-wizard
 ```
-*Note: Stateful memory allows you to reply with choices (e.g., `A`, `B`, `C`, `D`) for trivia questions or ask follow-up questions!*
 
 #### B. Single-Query Mode
 Submit a natural language prompt directly as an argument:
@@ -77,9 +74,9 @@ weekend-wizard/
 ├── src/weekend_wizard/
 │   ├── agent/          # Stateful agent loop, reflection orchestration
 │   ├── mcp_server/     # MCP server implementation
-│   ├── tools/          # Tool integrations (weather, books, jokes, dogs, trivia)
+│   ├── tools/          # Tool integrations (weather, books, events)
 │   ├── prompts/        # System prompts and templates
-│   ├── models/         # Pydantic schemas (placeholder)
+│   ├── models/         # Data models (placeholder)
 │   └── utils/          # Config validation and setup
 ├── docs/               # Documentation
 ├── scripts/            # Utility scripts
@@ -90,3 +87,7 @@ weekend-wizard/
 ## 📝 License
 
 MIT
+
+---
+
+*Built with ❤️ as a learning project in AI agent engineering.*

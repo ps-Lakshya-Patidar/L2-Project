@@ -72,6 +72,12 @@ async def run_agent_interactive(agent: WeekendWizardAgent, query: str) -> None:
 
     async def callback(msg: str) -> None:
         indicator.update(msg)
+        if msg.startswith("Calling tool '"):
+            clean_msg = msg.replace("Calling tool '", "").replace("' with args", " with args")
+            console.print(f"[bold blue]✦ Calling MCP Tool:[/] {clean_msg}")
+        elif msg.startswith("Received output from '"):
+            clean_msg = msg.replace("Received output from '", "").replace("'", "")
+            console.print(f"[bold green]✔ MCP Tool Output:[/] {clean_msg}")
 
     try:
         response = await agent.run_query(query, status_callback=callback)
@@ -113,7 +119,7 @@ def query(
         Panel(
             f"[bold gold1]🧙 Weekend Wizard[/]\n"
             f"[dim]Model: {settings.ollama_model} | URL: {settings.ollama_base_url}[/]\n\n"
-            f"Ask me about weather, book recommendations, trivia, jokes, or dog pictures!",
+            f"Ask me about weather, book recommendations, or local event discovery!",
             border_style="bold gold1",
             padding=(1, 2),
         )
@@ -141,6 +147,20 @@ def query(
             except (KeyboardInterrupt, EOFError):
                 console.print("\n[bold green]Goodbye! Have a great weekend! 🧙[/]")
                 break
+
+
+@app.command()
+def ui() -> None:
+    """Start the Weekend Wizard Streamlit Web UI portal."""
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script_path = Path(__file__).resolve().parent / "ui" / "streamlit_app.py"
+
+    # Run streamlit as a subprocess
+    console.print("[bold purple]🧙 Igniting the magic circle... Launching Streamlit Web UI...[/]")
+    subprocess.run([sys.executable, "-m", "streamlit", "run", str(script_path)])
 
 
 def main() -> None:

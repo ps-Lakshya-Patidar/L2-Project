@@ -193,6 +193,7 @@ if prompt := st.chat_input("Whisper your query here (e.g. What is the weather in
         status_box = st.status("Guiding plan...", expanded=True)
 
         async def ui_status_callback(msg: str) -> None:
+            print(f"🧭 [PlanPilot Log] {msg}", flush=True)
             if "Calling tool" in msg:
                 status_box.write(f"⚙️ **MCP Tool Call:** {msg.replace('Calling tool ', '')}")
             elif "Received output" in msg:

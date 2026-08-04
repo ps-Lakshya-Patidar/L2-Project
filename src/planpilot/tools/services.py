@@ -1,4 +1,4 @@
-"""Service implementations for the Weekend Wizard tools.
+"""Service implementations for the PlanPilot tools.
 
 Calls external free APIs: Open-Meteo, Open Library, and DuckDuckGo search.
 """
@@ -6,6 +6,7 @@ Calls external free APIs: Open-Meteo, Open Library, and DuckDuckGo search.
 from __future__ import annotations
 import html
 import re
+import urllib.parse
 from typing import Any
 import httpx
 
@@ -140,21 +141,24 @@ async def get_weather_data(city: str) -> dict[str, Any]:
 
 async def search_books_data(query: str) -> list[dict[str, Any]]:
     """Search books using the Open Library API."""
+    safe_query = urllib.parse.quote(query)
     async with httpx.AsyncClient() as client:
-        url = f"https://openlibrary.org/search.json?q={query}&limit=5"
+        url = f"https://openlibrary.org/search.json?q={safe_query}&limit=5"
         resp = await client.get(url)
         resp.raise_for_status()
         data = resp.json()
 
         books = []
         for doc in data.get("docs", []):
+            key = doc.get("key")
+            info_url = f"https://openlibrary.org{key}" if key else "Unknown"
             books.append(
                 {
                     "title": doc.get("title"),
                     "author": doc.get("author_name", ["Unknown"])[0],
                     "first_publish_year": doc.get("first_publish_year"),
                     "number_of_pages_median": doc.get("number_of_pages_median"),
-                    "key": doc.get("key"),
+                    "info_url": info_url,
                 }
             )
         return books
@@ -174,7 +178,8 @@ async def discover_events_data(city: str, query: str | None = None) -> list[dict
     else:
         search_query = f"events in {city} this weekend"
 
-    url = f"https://html.duckduckgo.com/html/?q={search_query}"
+    safe_search_query = urllib.parse.quote(search_query)
+    url = f"https://html.duckduckgo.com/html/?q={safe_search_query}"
 
     async with httpx.AsyncClient() as client:
         resp = await client.get(url, headers=headers)

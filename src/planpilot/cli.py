@@ -65,7 +65,7 @@ class StatusIndicator:
             self._live = None
 
 
-async def run_agent_interactive(agent: WeekendWizardAgent, query: str) -> None:
+async def run_agent_interactive(agent: PlanPilotAgent, query: str) -> None:
     """Run a single query and display step-by-step progress using Rich."""
     indicator = StatusIndicator(console)
     indicator.start()

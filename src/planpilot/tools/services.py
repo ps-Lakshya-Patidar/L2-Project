@@ -168,7 +168,58 @@ async def search_books_data(query: str) -> list[dict[str, Any]]:
 
 
 async def discover_events_data(city: str, query: str | None = None) -> list[dict[str, str]]:
-    """Search for live events happening in a specific location using DuckDuckGo search."""
+    """Search for live events happening in a specific location using SerpAPI Google Search, with a fallback to DuckDuckGo search."""
+    from planpilot.utils.config import get_settings
+    settings = get_settings()
+
+    if query:
+        search_query = f"{query} in {city} this weekend"
+    else:
+        search_query = f"events in {city} this weekend"
+
+    # 1. Attempt to use SerpAPI standard search if API Key is configured
+    if settings.serpapi_api_key and settings.serpapi_api_key.strip():
+        api_key = settings.serpapi_api_key.strip()
+        safe_query = urllib.parse.quote(search_query)
+        safe_location = urllib.parse.quote(city)
+        url = f"https://serpapi.com/search.json?q={safe_query}&location={safe_location}&api_key={api_key}"
+
+        try:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, timeout=15.0)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    events_list = data.get("events_results", [])
+                    if events_list:
+                        results = []
+                        for ev in events_list[:5]:
+                            title = ev.get("title", "Unknown Event")
+                            date_str = ev.get("date", "TBD")
+                            time_str = ev.get("time", "")
+
+                            address = ev.get("address", [])
+                            venue = address[0] if address else "Unknown Venue"
+
+                            # Construct direct Google Search URL for the specific event to find booking pages
+                            safe_event_search = urllib.parse.quote(f"{title} {city} tickets")
+                            link = f"https://www.google.com/search?q={safe_event_search}"
+
+                            when_str = f"{date_str} at {time_str}" if time_str else date_str
+                            summary = f"Happening at {venue} ({when_str}). Info/Tickets: {link}"
+                            results.append({"source": title, "summary": summary})
+                        return results
+                    else:
+                        return [
+                            {
+                                "source": "SerpAPI Notice",
+                                "summary": f"No upcoming events matched '{search_query}' in structured search results.",
+                            }
+                        ]
+        except Exception:
+            # Fall back to DuckDuckGo search if SerpAPI request fails
+            pass
+
+    # 2. Fallback to DuckDuckGo web scraping
     headers = {
         "User-Agent": (
             "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "

@@ -65,6 +65,12 @@ class Settings(BaseSettings):
         description="Groq model to use.",
     )
 
+    # --- SerpAPI ---
+    serpapi_api_key: str | None = Field(
+        default=None,
+        description="API key for SerpAPI (Google Events search).",
+    )
+
     # --- MCP Server ---
     mcp_server_host: str = Field(
         default="localhost",

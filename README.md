@@ -119,6 +119,9 @@ If you do not have Ollama installed or running locally, you can run entirely in 
 LLM_PROVIDER=groq
 GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=llama-3.3-70b-versatile
+
+# Optional: supply a free API key from https://serpapi.com for structured Google Events searches.
+SERPAPI_API_KEY=your_serpapi_api_key_here
 ```
 
 ### 4. Running Commands

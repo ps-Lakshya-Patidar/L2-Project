@@ -1,4 +1,4 @@
-"""Weekend Wizard MCP Server.
+"""PlanPilot MCP Server.
 
 Creates and configures the MCPServer instance with all registered tools.
 Tools are registered via the @mcp_server.tool() decorator.
@@ -7,19 +7,19 @@ Tools are registered via the @mcp_server.tool() decorator.
 from __future__ import annotations
 import json
 from mcp.server import MCPServer
-from weekend_wizard.tools.services import (
+from planpilot.tools.services import (
     get_weather_data,
     search_books_data,
     discover_events_data,
 )
-from weekend_wizard.utils.config import get_settings
+from planpilot.utils.config import get_settings
 
 _settings = get_settings()
 
 mcp_server = MCPServer(
-    name="weekend-wizard",
+    name="planpilot",
     version="0.1.0",
-    description="Weekend Wizard Local Tool Server",
+    description="PlanPilot Local Tool Server",
     instructions="A tool server providing weather, books, and event discovery.",
 )
 

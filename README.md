@@ -1,6 +1,6 @@
-# 🧙 Weekend Wizard
+# 🧭 PlanPilot
 
-> A fully local, stateful AI agent powered by **Ollama** (`llama3.2:3b`), **MCP** (Model Context Protocol), and free public APIs — designed to make your weekends more fun.
+> A fully local, stateful AI agent powered by **Ollama** (`llama3.2:3b`) / **Groq Cloud**, **MCP** (Model Context Protocol), and free public APIs — designed to help you with weather forecasts, book searches, and event discovery.
 
 ---
 
@@ -8,7 +8,7 @@
 
 | Tool | API | Description |
 |------|-----|-------------|
-| 🌤️ Weather | Open-Meteo | Get current weather for any city |
+| 🌤️ Weather | Open-Meteo | Get current weather and 12h precipitation forecasts for any city |
 | 📚 Books | Open Library | Search and recommend books by topic, author, or title |
 | 🎟️ Events | DuckDuckGo | Discover live events, concerts, or exhibitions happening in a specific location |
 
@@ -17,21 +17,21 @@
 ```
 User ──► CLI ──► Stateful Agent Loop ──► MCP Client ──► MCP Subprocess ──► Tools ──► APIs
                     │                                                        │
-                    └──── Ollama (llama3.2:3b) ◄── QA Reflection Pass ◄──────┘
+                    └──── Ollama / Groq API ◄── QA Reflection Pass ◄─────────┘
 ```
 
 **Key design principles:**
 - **Model Context Protocol (MCP)**: Implements standard MCP stdio client-server protocol.
 - **Stateful Conversation**: Preserves chat history across turns, enabling multi-turn conversations and follow-ups.
-- **Native Tool Calling**: Utilizes local `llama3.2:3b` tool-calling capabilities dynamically.
+- **Unified LLM Abstraction**: Supports local Ollama or high-speed Groq Cloud API.
 - **Self-Reflection (QA) Pass**: Performs a final verification pass using conversation context and tool outputs before printing answers.
-- **Zero Cloud Dependencies**: 100% local operation — no keys or cloud tokens required.
+- **Interactive Portal**: Exposes a gorgeous Streamlit dashboard for vital checks, model switching, and real-time execution logs.
 
 ## 🚀 Quick Start
 
 ### 1. Prerequisites
 - **Python**: version 3.11+
-- **Ollama**: installed and running locally with the model pulled:
+- **Ollama** (optional): installed and running locally with the model pulled:
   ```bash
   ollama pull llama3.2:3b
   ```
@@ -53,33 +53,36 @@ Copy the environment template to activate local settings (pre-configured to defa
 copy .env.example .env
 ```
 
-### 4. Running the Wizard
+### 4. Running the Agent
 
 #### A. Interactive Mode (Multi-turn REPL)
-Launch the wizard directly to enter stateful interactive mode:
+Launch PlanPilot directly to enter stateful interactive mode:
 ```bash
-weekend-wizard
+planpilot query
 ```
 
 #### B. Single-Query Mode
 Submit a natural language prompt directly as an argument:
 ```bash
-weekend-wizard "What is the weather in Ahmedabad?"
+planpilot query "What is the weather in Indore?"
+```
+
+#### C. Streamlit Web Portal
+Ignite the engine and launch the local web UI:
+```bash
+planpilot ui
 ```
 
 ## 📁 Project Structure
 
 ```
-weekend-wizard/
-├── src/weekend_wizard/
+planpilot/
+├── src/planpilot/
 │   ├── agent/          # Stateful agent loop, reflection orchestration
 │   ├── mcp_server/     # MCP server implementation
 │   ├── tools/          # Tool integrations (weather, books, events)
-│   ├── prompts/        # System prompts and templates
-│   ├── models/         # Data models (placeholder)
+│   ├── ui/             # Streamlit Web UI portal
 │   └── utils/          # Config validation and setup
-├── docs/               # Documentation
-├── scripts/            # Utility scripts
 ├── pyproject.toml      # Packaging & CLI entry points metadata
 └── requirements.txt    # Pinned production runtime dependencies
 ```

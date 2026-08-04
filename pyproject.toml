@@ -3,9 +3,9 @@ requires = ["setuptools>=68.0", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "weekend-wizard"
+name = "planpilot"
 version = "0.1.0"
-description = "A local AI agent powered by Ollama, MCP, and free APIs for weekend fun."
+description = "A local AI agent powered by Ollama, MCP, and free APIs for planning and event discovery."
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.11"
@@ -45,7 +45,7 @@ dev = [
 ]
 
 [project.scripts]
-weekend-wizard = "weekend_wizard.cli:main"
+planpilot = "planpilot.cli:main"
 
 # --- Tool Configuration ---
 

@@ -4,7 +4,7 @@ Reads from environment variables and .env files, with sensible defaults
 for local development. All config is validated at startup.
 
 Usage:
-    from weekend_wizard.utils.config import get_settings
+    from planpilot.utils.config import get_settings
     settings = get_settings()
     print(settings.ollama_base_url)
 """
@@ -17,12 +17,12 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Project root is 3 levels up from this file: src/weekend_wizard/utils/config.py
+# Project root is 3 levels up from this file: src/planpilot/utils/config.py
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
 
 
 class Settings(BaseSettings):
-    """Weekend Wizard application settings.
+    """PlanPilot application settings.
 
     Values are loaded in this priority order (highest wins):
     1. Environment variables

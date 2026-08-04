@@ -1,4 +1,4 @@
-"""Weekend Wizard Agent Loop.
+"""PlanPilot Agent Loop.
 
 Orchestrates the client-side MCP session, connects to the local Ollama instance,
 manages tool-calling loops, and performs a single reflection pass before returning the final response.
@@ -15,7 +15,7 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from weekend_wizard.utils.config import get_settings
+from planpilot.utils.config import get_settings
 
 
 class ToolFunction:
@@ -41,20 +41,20 @@ class LLMResponse:
         self.message = message
 
 
-class WeekendWizardAgent:
+class PlanPilotAgent:
     """Agent orchestrator connecting Ollama to the MCP Tool Server."""
 
     def __init__(self) -> None:
         self.settings = get_settings()
         # Parameters to start the MCP server as a subprocess
         self.server_params = StdioServerParameters(
-            command=sys.executable, args=["-m", "weekend_wizard.mcp_server"], env=None
+            command=sys.executable, args=["-m", "planpilot.mcp_server"], env=None
         )
         self.messages: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": (
-                    "You are Weekend Wizard, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
+                    "You are PlanPilot, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
                     "The MCP server provides the following tools: 'get_weather', 'search_books', and 'discover_events'. "
                     "When the user asks about available tools, explain that you have access to these 3 tools via the Model Context Protocol. "
                     "For weather, book recommendations, or event discovery requests, you MUST call the appropriate tool and only answer using the "
@@ -71,7 +71,7 @@ class WeekendWizardAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are Weekend Wizard, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
+                    "You are PlanPilot, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
                     "The MCP server provides the following tools: 'get_weather', 'search_books', and 'discover_events'. "
                     "When the user asks about available tools, explain that you have access to these 3 tools via the Model Context Protocol. "
                     "For weather, book recommendations, or event discovery requests, you MUST call the appropriate tool and only answer using the "

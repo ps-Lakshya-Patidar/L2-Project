@@ -1,9 +1,9 @@
 """Entry point for running the MCP server as a module.
 
 Usage:
-    python -m weekend_wizard.mcp_server           # stdio transport (default)
-    python -m weekend_wizard.mcp_server --stdio    # explicit stdio
-    python -m weekend_wizard.mcp_server --sse      # SSE transport
+    python -m planpilot.mcp_server           # stdio transport (default)
+    python -m planpilot.mcp_server --stdio    # explicit stdio
+    python -m planpilot.mcp_server --sse      # SSE transport
 
 The stdio transport is the standard for local agent ↔ server communication.
 The agent spawns this process and communicates over stdin/stdout.
@@ -14,7 +14,7 @@ from __future__ import annotations
 import sys
 from typing import Literal
 
-from weekend_wizard.mcp_server.server import mcp_server
+from planpilot.mcp_server.server import mcp_server
 
 
 def main() -> None:

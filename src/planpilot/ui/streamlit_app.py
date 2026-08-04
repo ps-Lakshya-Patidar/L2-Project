@@ -1,12 +1,12 @@
 import asyncio
 import streamlit as st
 import httpx
-from weekend_wizard.agent.agent import WeekendWizardAgent
-from weekend_wizard.utils.config import get_settings
+from planpilot.agent.agent import PlanPilotAgent
+from planpilot.utils.config import get_settings
 
 # Page config and premium styling
 st.set_page_config(
-    page_title="🧙 Weekend Wizard", page_icon="🧙", layout="wide", initial_sidebar_state="expanded"
+    page_title="🧭 PlanPilot", page_icon="🧭", layout="wide", initial_sidebar_state="expanded"
 )
 
 # Inject custom premium CSS for glowing purple borders, glassmorphism, and Outfit font
@@ -83,7 +83,7 @@ st.markdown(
 
 # Initialize Session State
 if "agent" not in st.session_state:
-    st.session_state.agent = WeekendWizardAgent()
+    st.session_state.agent = PlanPilotAgent()
     st.session_state.chat_history = []
 
 settings = get_settings()
@@ -91,7 +91,7 @@ settings = get_settings()
 # Sidebar Panel
 with st.sidebar:
     st.markdown(
-        '<div class="logo"><span style="font-size:2.2rem">🧙</span><span class="header-title" style="font-size:1.6rem; vertical-align:middle; margin-left:10px">Weekend Wizard</span></div>',
+        '<div class="logo"><span style="font-size:2.2rem">🧭</span><span class="header-title" style="font-size:1.6rem; vertical-align:middle; margin-left:10px">PlanPilot</span></div>',
         unsafe_allow_html=True,
     )
     st.markdown("---")
@@ -170,7 +170,7 @@ with st.sidebar:
         st.rerun()
 
 # Main Header
-st.markdown('<h1 class="header-title">🧙 Weekend Wizard Portal</h1>', unsafe_allow_html=True)
+st.markdown('<h1 class="header-title">🧭 PlanPilot Portal</h1>', unsafe_allow_html=True)
 st.write(
     "A local AI assistant driven by Model Context Protocol (MCP) tool server to check weather, books, and discover local events."
 )
@@ -190,7 +190,7 @@ if prompt := st.chat_input("Whisper your query here (e.g. What is the weather in
     # Assistant container
     with st.chat_message("assistant"):
         # Live status step tracer
-        status_box = st.status("Conjuring magic...", expanded=True)
+        status_box = st.status("Guiding plan...", expanded=True)
 
         async def ui_status_callback(msg: str) -> None:
             if "Calling tool" in msg:
@@ -211,12 +211,12 @@ if prompt := st.chat_input("Whisper your query here (e.g. What is the weather in
             )
 
             # Close/complete the status box
-            status_box.update(label="Response conjured!", state="complete", expanded=False)
+            status_box.update(label="Plan compiled!", state="complete", expanded=False)
 
             # Print final response
             st.markdown(response)
             st.session_state.chat_history.append({"role": "assistant", "content": response})
 
         except Exception as e:
-            status_box.update(label="Spell Failed!", state="error", expanded=True)
+            status_box.update(label="Routing failed!", state="error", expanded=True)
             st.error(f"Execution Error: {str(e)}")

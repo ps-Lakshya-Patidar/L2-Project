@@ -23,12 +23,12 @@ from rich.panel import Panel
 from rich.spinner import Spinner
 from rich.text import Text
 
-from weekend_wizard.agent.agent import WeekendWizardAgent
-from weekend_wizard.utils.config import get_settings
+from planpilot.agent.agent import PlanPilotAgent
+from planpilot.utils.config import get_settings
 
 app = typer.Typer(
-    name="weekend-wizard",
-    help="🧙 Weekend Wizard: An interactive local AI agent helper for your weekends.",
+    name="planpilot",
+    help="🧭 PlanPilot: An interactive local AI agent helper for planning and event discovery.",
     add_completion=False,
 )
 console = Console()
@@ -88,7 +88,7 @@ async def run_agent_interactive(agent: WeekendWizardAgent, query: str) -> None:
         console.print(
             Panel(
                 Markdown(response),
-                title="🧙 Weekend Wizard Response",
+                title="🧭 PlanPilot Response",
                 border_style="green",
                 padding=(1, 2),
             )
@@ -104,20 +104,20 @@ async def run_agent_interactive(agent: WeekendWizardAgent, query: str) -> None:
 @app.command()
 def query(
     user_query: str | None = typer.Argument(
-        None, help="Natural language prompt for the wizard. If omitted, starts interactive mode."
+        None, help="Natural language prompt for the agent. If omitted, starts interactive mode."
     ),
     model: str | None = typer.Option(
         None, "--model", "-m", help="Override the Ollama model (default is mistral:7b)."
     ),
 ) -> None:
-    """Run Weekend Wizard to answer your weekend questions."""
+    """Run PlanPilot to answer your questions."""
     settings = get_settings()
     if model:
         settings.ollama_model = model
 
     console.print(
         Panel(
-            f"[bold gold1]🧙 Weekend Wizard[/]\n"
+            f"[bold gold1]🧭 PlanPilot[/]\n"
             f"[dim]Model: {settings.ollama_model} | URL: {settings.ollama_base_url}[/]\n\n"
             f"Ask me about weather, book recommendations, or local event discovery!",
             border_style="bold gold1",
@@ -125,7 +125,7 @@ def query(
         )
     )
 
-    agent = WeekendWizardAgent()
+    agent = PlanPilotAgent()
 
     if user_query:
         # Single query mode
@@ -139,19 +139,19 @@ def query(
             try:
                 prompt = console.input("[bold purple]You ──► [/]")
                 if prompt.strip().lower() in ("exit", "quit"):
-                    console.print("[bold green]Goodbye! Have a great weekend! 🧙[/]")
+                    console.print("[bold green]Goodbye! Have a great day! 🧭[/]")
                     break
                 if not prompt.strip():
                     continue
                 asyncio.run(run_agent_interactive(agent, prompt))
             except (KeyboardInterrupt, EOFError):
-                console.print("\n[bold green]Goodbye! Have a great weekend! 🧙[/]")
+                console.print("\n[bold green]Goodbye! Have a great day! 🧭[/]")
                 break
 
 
 @app.command()
 def ui() -> None:
-    """Start the Weekend Wizard Streamlit Web UI portal."""
+    """Start the PlanPilot Streamlit Web UI portal."""
     import subprocess
     import sys
     from pathlib import Path
@@ -159,7 +159,7 @@ def ui() -> None:
     script_path = Path(__file__).resolve().parent / "ui" / "streamlit_app.py"
 
     # Run streamlit as a subprocess
-    console.print("[bold purple]🧙 Igniting the magic circle... Launching Streamlit Web UI...[/]")
+    console.print("[bold purple]🧭 Igniting the engine... Launching PlanPilot Web UI...[/]")
     subprocess.run([sys.executable, "-m", "streamlit", "run", str(script_path)])
 
 

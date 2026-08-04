@@ -1,95 +1,137 @@
 # 🧭 PlanPilot
 
-> A fully local, stateful AI agent powered by **Ollama** (`llama3.2:3b`) / **Groq Cloud**, **MCP** (Model Context Protocol), and free public APIs — designed to help you with weather forecasts, book searches, and event discovery.
+PlanPilot is a stateful, fully local AI agent orchestrator powered by **Ollama** / **Groq Cloud**, the **Model Context Protocol (MCP)**, and free public APIs. It acts as your personal navigator to fetch real-time weather forecasts, suggest reading material, and discover live local events.
 
 ---
 
 ## ✨ Features
 
-| Tool | API | Description |
-|------|-----|-------------|
-| 🌤️ Weather | Open-Meteo | Get current weather and 12h precipitation forecasts for any city |
-| 📚 Books | Open Library | Search and recommend books by topic, author, or title |
-| 🎟️ Events | DuckDuckGo | Discover live events, concerts, or exhibitions happening in a specific location |
+- **🌤️ Smart Weather Forecasts**: Connects to the Open-Meteo API to retrieve current conditions and hourly precipitation probabilities (rain check) for the next 12 hours.
+- **📚 Book Recommendations**: Queries the Open Library API to find books by topic, title, or author.
+- **🎟️ Live Event Discovery**: Uses DuckDuckGo to scrape real-time events, comedy shows, concerts, or exhibitions for any city.
+- **💻 Stateful Conversation REPL**: An interactive CLI prompt that remembers previous turns for multi-turn questions.
+- **🌐 Interactive Streamlit Portal**: A beautiful, dark-themed dashboard featuring system vital checks, model switching, and real-time terminal stdout log mirroring.
+
+---
 
 ## 🏗️ Architecture
 
+PlanPilot uses a client-server architecture based on the Model Context Protocol (MCP) using the `stdio` transport.
+
 ```
-User ──► CLI ──► Stateful Agent Loop ──► MCP Client ──► MCP Subprocess ──► Tools ──► APIs
-                    │                                                        │
-                    └──── Ollama / Groq API ◄── QA Reflection Pass ◄─────────┘
+User ──► CLI / Streamlit UI
+              │
+              ▼
+    Stateful Agent Loop (planpilot.agent)
+              │
+      ┌───────┴───────┐
+      ▼               ▼
+   Ollama /        MCP Client Session
+   Groq API           │ (stdio transport protocol)
+                      ▼
+               MCP Subprocess (planpilot.mcp_server)
+                      │
+                      ▼
+                 Registered Tools (get_weather, search_books, discover_events)
+                      │
+                      ▼
+                 External APIs (Open-Meteo, Open Library, DuckDuckGo)
 ```
 
-**Key design principles:**
-- **Model Context Protocol (MCP)**: Implements standard MCP stdio client-server protocol.
-- **Stateful Conversation**: Preserves chat history across turns, enabling multi-turn conversations and follow-ups.
-- **Unified LLM Abstraction**: Supports local Ollama or high-speed Groq Cloud API.
-- **Self-Reflection (QA) Pass**: Performs a final verification pass using conversation context and tool outputs before printing answers.
-- **Interactive Portal**: Exposes a gorgeous Streamlit dashboard for vital checks, model switching, and real-time execution logs.
+### Protocol flow:
+1. The **Stateful Agent** initiates a protocol handshake with the local MCP server running as a subprocess.
+2. The MCP server registers the active tools and sends their schemas back to the client.
+3. The Agent loops dynamically to fetch reasoning steps, executes tools over stdout/stdin channels, feeds results back to the LLM, and conducts a **Self-Reflection (QA) Review** pass before returning the final response.
 
-## 🚀 Quick Start
+---
+
+## ⚙️ How the Process Works (Under the Hood)
+
+Whenever you submit a query, PlanPilot goes through the following sequence:
+
+```
+[User Prompt] ──► [HANDSHAKE] ──► [LLM Tool Analysis]
+                                        │
+             ┌──────────────────────────┴──────────────────────────┐
+             ▼ (Needs Data)                                        ▼ (No tools needed / done)
+      [Execute MCP Tool]                                    [Self-Reflection QA]
+             │                                                     │
+             ▼                                                     ▼
+    [API Return & Loop] ───────────────────────────────────► [Refined Response]
+```
+
+1. ** हैंडशेक (Handshake)**: The agent establishes communication with the MCP server subprocess.
+2. **Tool Scheme Retrieval**: The agent retrieves the JSON schemas of all registered tools (`get_weather`, `search_books`, `discover_events`) and describes them to the LLM.
+3. **Reasoning Loop**: 
+   - The LLM parses the prompt and decides whether to output a direct reply or run a tool call.
+   - For example, asking about Ahmedabad events triggers a tool call to `discover_events` with `{"city": "Ahmedabad", "query": "..."}`.
+4. **Tool Execution**: The agent intercepts the tool call, makes the corresponding async network request to the public API, and inserts the raw JSON output back into the conversation history.
+5. **Self-Reflection (QA) Pass**:
+   - To prevent hallucinations, the draft response and current turn's tool outputs are sent to a secondary LLM reviewer.
+   - The QA pass verifies that the draft matches the tool data, filters out any unrelated history answers, and outputs a clean, friendly, and accurate response.
+6. **Log Mirroring**: In Streamlit mode, the callback outputs print trace logs in real-time to both your web dashboard and the terminal stdout console.
+
+---
+
+## 🚀 How to Run the Project
 
 ### 1. Prerequisites
-- **Python**: version 3.11+
-- **Ollama** (optional): installed and running locally with the model pulled:
+- **Python**: Version 3.11+
+- **Ollama** (optional, for local run): Installed and running with the model pulled:
   ```bash
   ollama pull llama3.2:3b
   ```
 
 ### 2. Installation
-Clone the repository and install the production requirements:
-```bash
-git clone https://github.com/ps-Lakshya-Patidar/L2-Project.git
-cd L2-Project/weekend-wizard
+Clone the repository, create a virtual environment, and install the package:
+```powershell
+# Navigate to parent folder
+cd "C:\Users\LakshyaPatidar\GitHub\L2 Project\PlanPilot"
+
+# Create virtual environment
 python -m venv .venv
-.venv\Scripts\activate        # Windows
+
+# Activate virtual environment
+.venv\Scripts\Activate.ps1
+
+# Install requirements and package in editable mode
 pip install -r requirements.txt
 pip install -e .
 ```
 
 ### 3. Configuration
-Copy the environment template to activate local settings (pre-configured to default to `llama3.2:3b`):
-```bash
+Copy the environment template and configure your provider (pre-configured for local Ollama, or add a Groq API key):
+```powershell
 copy .env.example .env
 ```
-
-### 4. Running the Agent
-
-#### A. Interactive Mode (Multi-turn REPL)
-Launch PlanPilot directly to enter stateful interactive mode:
-```bash
-planpilot query
+Inside `.env`:
+```env
+LLM_PROVIDER=groq
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
-#### B. Single-Query Mode
-Submit a natural language prompt directly as an argument:
-```bash
-planpilot query "What is the weather in Indore?"
-```
+### 4. Running Commands
 
-#### C. Streamlit Web Portal
-Ignite the engine and launch the local web UI:
-```bash
+#### **A. Streamlit Web Portal (Recommended)**
+To start the dark-theme UI with live terminal logs:
+```powershell
 planpilot ui
 ```
+*Open **[http://localhost:8501](http://localhost:8501)** in your browser.*
 
-## 📁 Project Structure
-
+#### **B. Stateful Interactive Mode (CLI REPL)**
+To chat directly inside your console with history memory:
+```powershell
+planpilot query
 ```
-planpilot/
-├── src/planpilot/
-│   ├── agent/          # Stateful agent loop, reflection orchestration
-│   ├── mcp_server/     # MCP server implementation
-│   ├── tools/          # Tool integrations (weather, books, events)
-│   ├── ui/             # Streamlit Web UI portal
-│   └── utils/          # Config validation and setup
-├── pyproject.toml      # Packaging & CLI entry points metadata
-└── requirements.txt    # Pinned production runtime dependencies
+*Type `exit` or `quit` to close.*
+
+#### **C. Single-Query Command**
+Submit a quick prompt directly as a console argument:
+```powershell
+planpilot query "Is there any rain expected in Indore in the next few hours?"
 ```
-
-## 📝 License
-
-MIT
 
 ---
 

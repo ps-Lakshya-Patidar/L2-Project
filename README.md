@@ -7,8 +7,8 @@ PlanPilot is a stateful, fully local AI agent orchestrator powered by **Ollama**
 ## ✨ Features
 
 - **🌤️ Smart Weather Forecasts**: Connects to the Open-Meteo API to retrieve current conditions and hourly precipitation probabilities (rain check) for the next 12 hours.
-- **📚 Book Recommendations**: Queries the Open Library API to find books by topic, title, or author.
-- **🎟️ Live Event Discovery**: Uses DuckDuckGo to scrape real-time events, comedy shows, concerts, or exhibitions for any city.
+- **📚 Book Recommendations**: Queries the Open Library API to find books by topic, title, or author. Includes URL-encoding and live links.
+- **🎟️ Live Event Discovery**: Uses DuckDuckGo to scrape real-time events, comedy shows, concerts, or exhibitions for any city. Built-in layout parser fallback.
 - **💻 Stateful Conversation REPL**: An interactive CLI prompt that remembers previous turns for multi-turn questions.
 - **🌐 Interactive Streamlit Portal**: A beautiful, dark-themed dashboard featuring system vital checks, model switching, and real-time terminal stdout log mirroring.
 
@@ -60,11 +60,11 @@ Whenever you submit a query, PlanPilot goes through the following sequence:
     [API Return & Loop] ───────────────────────────────────► [Refined Response]
 ```
 
-1. ** हैंडशेक (Handshake)**: The agent establishes communication with the MCP server subprocess.
+1. **Handshake**: The agent establishes communication with the MCP server subprocess.
 2. **Tool Scheme Retrieval**: The agent retrieves the JSON schemas of all registered tools (`get_weather`, `search_books`, `discover_events`) and describes them to the LLM.
 3. **Reasoning Loop**: 
    - The LLM parses the prompt and decides whether to output a direct reply or run a tool call.
-   - For example, asking about Ahmedabad events triggers a tool call to `discover_events` with `{"city": "Ahmedabad", "query": "..."}`.
+   - For example, asking about Indore rain triggers a tool call to `get_weather` with `{"city": "Indore"}`.
 4. **Tool Execution**: The agent intercepts the tool call, makes the corresponding async network request to the public API, and inserts the raw JSON output back into the conversation history.
 5. **Self-Reflection (QA) Pass**:
    - To prevent hallucinations, the draft response and current turn's tool outputs are sent to a secondary LLM reviewer.
@@ -104,7 +104,17 @@ Copy the environment template and configure your provider (pre-configured for lo
 ```powershell
 copy .env.example .env
 ```
-Inside `.env`:
+
+#### **A. Local Execution (Requires Ollama running)**
+Ensure `.env` contains:
+```env
+LLM_PROVIDER=ollama
+OLLAMA_BASE_URL=http://localhost:11434
+OLLAMA_MODEL=llama3.2:3b
+```
+
+#### **B. Cloud Execution (No local Ollama needed - Grader Settings)**
+If you do not have Ollama installed or running locally, you can run entirely in the cloud using the Groq provider. Set `.env` to:
 ```env
 LLM_PROVIDER=groq
 GROQ_API_KEY=your_groq_api_key_here
@@ -113,7 +123,7 @@ GROQ_MODEL=llama-3.3-70b-versatile
 
 ### 4. Running Commands
 
-#### **A. Streamlit Web Portal (Recommended)**
+#### **A. Streamlit Web Portal**
 To start the dark-theme UI with live terminal logs:
 ```powershell
 planpilot ui
@@ -131,6 +141,41 @@ planpilot query
 Submit a quick prompt directly as a console argument:
 ```powershell
 planpilot query "Is there any rain expected in Indore in the next few hours?"
+```
+
+---
+
+## 📊 Sample Execution Log & Integration Test
+
+Below is an actual CLI execution log demonstrating tool listing, execution, and the reflection pass:
+
+```powershell
+(.venv) PS C:\Users\LakshyaPatidar\GitHub\L2 Project\PlanPilot> planpilot query "What is the weather in Delhi?"
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                                                                             │
+│  🧭 PlanPilot                                                               │
+│  Model: llama3.2:3b | URL: http://localhost:11434                           │
+│                                                                             │
+│  Ask me about weather, book recommendations, or local event discovery!      │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+Connecting to tool server...
+Initializing protocol handshake...
+Retrieving registered tools...
+Reasoning (Step 1)...
+✦ Calling MCP Tool: get_weather with args {'city': 'Delhi'}...
+Received output from 'get_weather'
+Reasoning (Step 2)...
+Performing self-reflection review...
+
+┌─────────────────────────── 🧭 PlanPilot Response ───────────────────────────┐
+│                                                                             │
+│  The current weather in Delhi is 28.9 degrees Celsius with a wind speed     │
+│  of 0.7 km/h (units: km/h). According to the forecast, there's a 94%        │
+│  probability of rain in the next 12 hours, with approximately 2.7 mm of     │
+│  rainfall expected.                                                         │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ---

@@ -37,7 +37,7 @@ async def get_weather(
         ),
     ]
 ) -> dict[str, Any]:
-    """Fetch current weather for a city."""
+    """Fetch current weather for a city. Returns temperature in Celsius, windspeed in km/h, and a 12-hour precipitation forecast."""
     try:
         res = await get_weather_data(city)
         return res

@@ -47,7 +47,10 @@ REGION_FALLBACKS = {
 
 
 async def get_weather_data(city: str) -> dict[str, Any]:
-    """Fetch current weather for a city using Open-Meteo Geocoding and Forecast APIs."""
+    """Fetch current weather for a city using Open-Meteo Geocoding and Forecast APIs.
+
+    Returns current temperature in Celsius, windspeed in km/h, and precipitation forecast.
+    """
     search_name = city.lower().strip()
     query_city = city
     note = None
@@ -76,7 +79,7 @@ async def get_weather_data(city: str) -> dict[str, Any]:
         # 2. Get current weather and hourly forecast for precipitation
         weather_url = (
             f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            f"&current_weather=true&hourly=precipitation_probability,rain&temperature_unit=celsius"
+            f"&current_weather=true&hourly=precipitation_probability,rain&temperature_unit=celsius&wind_speed_unit=kmh"
         )
         weather_resp = await client.get(weather_url)
         weather_resp.raise_for_status()
@@ -200,5 +203,17 @@ async def discover_events_data(city: str, query: str | None = None) -> list[dict
             snippet = html.unescape(snippet)
 
             results.append({"source": title, "summary": snippet})
+
+    if not results:
+        results.append(
+            {
+                "source": "Search Parser Warning",
+                "summary": (
+                    "The search request completed, but the HTML parsing rules did not match the page layout. "
+                    "The search engine layout may have changed, or no events matched the query. "
+                    "Please check event websites directly."
+                ),
+            }
+        )
 
     return results

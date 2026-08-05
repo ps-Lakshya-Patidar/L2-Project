@@ -6,6 +6,8 @@ manages tool-calling loops, and performs a single reflection pass before returni
 
 from __future__ import annotations
 
+import asyncio
+import functools
 import json
 import sys
 from typing import Any
@@ -16,6 +18,7 @@ from mcp.client.stdio import stdio_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from planpilot.utils.config import get_settings
+from planpilot.utils.preferences import load_preferences, build_preference_context
 
 
 class ToolFunction:
@@ -54,13 +57,15 @@ class PlanPilotAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are PlanPilot, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
-                    "The MCP server provides the following tools: 'get_weather', 'search_books', and 'discover_events'. "
-                    "When the user asks about available tools, explain that you have access to these 3 tools via the Model Context Protocol. "
-                    "For weather, book recommendations, or event discovery requests, you MUST call the appropriate tool and only answer using the "
-                    "information returned by the tool. If the user query is about topics you do not have tools for (such as general news, "
-                    "math calculations, or general chit-chat), do NOT invoke any tools. Instead, reply directly to the user in plain text explaining "
-                    "that you do not have access to that information. If the tools do not provide the needed information, state it clearly."
+                    "You are PlanPilot, a Personal AI Weekend Concierge powered by the Model Context Protocol (MCP) tool server. "
+                    "The MCP server gives you access to four tools: 'get_weather', 'search_books', 'discover_events', and 'get_weekend_score'. "
+                    "Call ONLY the tools explicitly requested by or relevant to the user query. "
+                    "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
+                    "For weather requests, call ONLY 'get_weather'. "
+                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weekend_score' and/or 'discover_events'. "
+                    "When user preferences are provided, use them to personalise all recommendations: match interests, avoid dislikes. "
+                    "Structure recommendations cleanly. For weekend plans, present 3 distinct options (Cozy, Adventure, Budget). "
+                    "If the tools do not provide information, state it clearly. Do NOT invent data."
                 ),
             }
         ]
@@ -71,13 +76,15 @@ class PlanPilotAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are PlanPilot, a local AI assistant. You operate using the Model Context Protocol (MCP) tool server. "
-                    "The MCP server provides the following tools: 'get_weather', 'search_books', and 'discover_events'. "
-                    "When the user asks about available tools, explain that you have access to these 3 tools via the Model Context Protocol. "
-                    "For weather, book recommendations, or event discovery requests, you MUST call the appropriate tool and only answer using the "
-                    "information returned by the tool. If the user query is about topics you do not have tools for (such as general news, "
-                    "math calculations, or general chit-chat), do NOT invoke any tools. Instead, reply directly to the user in plain text explaining "
-                    "that you do not have access to that information. If the tools do not provide the needed information, state it clearly."
+                    "You are PlanPilot, a Personal AI Weekend Concierge powered by the Model Context Protocol (MCP) tool server. "
+                    "The MCP server gives you access to four tools: 'get_weather', 'search_books', 'discover_events', and 'get_weekend_score'. "
+                    "Call ONLY the tools explicitly requested by or relevant to the user query. "
+                    "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
+                    "For weather requests, call ONLY 'get_weather'. "
+                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weekend_score' and/or 'discover_events'. "
+                    "When user preferences are provided, use them to personalise all recommendations: match interests, avoid dislikes. "
+                    "Structure recommendations cleanly. For weekend plans, present 3 distinct options (Cozy, Adventure, Budget). "
+                    "If the tools do not provide information, state it clearly. Do NOT invent data."
                 ),
             }
         ]
@@ -161,12 +168,13 @@ class PlanPilotAgent:
         return ollama_msgs
 
     @retry(
-        stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=2, max=10), reraise=True
+        stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=5, max=60), reraise=True
     )
     def _call_llm_with_retry(
         self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
     ) -> LLMResponse:
         """Helper to invoke the configured LLM provider with exponential backoff on failure."""
+        import time
         import httpx
 
         provider = self.settings.llm_provider.lower().strip()
@@ -189,8 +197,12 @@ class PlanPilotAgent:
                 payload["tools"] = tools
                 payload["tool_choice"] = "auto"
 
-            with httpx.Client(timeout=30.0) as client:
+            with httpx.Client(timeout=60.0) as client:
                 resp = client.post(url, json=payload, headers=headers)
+                # Handle 429 rate limit: honour Retry-After header before raising
+                if resp.status_code == 429:
+                    retry_after = int(resp.headers.get("retry-after", "20"))
+                    time.sleep(retry_after)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -246,13 +258,47 @@ class PlanPilotAgent:
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
 
-    async def run_query(self, user_query: str, status_callback: Any = None) -> str:
+    async def _run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
+        """Run a blocking function in a thread executor, cleanly re-raising any exception.
+
+        This prevents exceptions from the thread pool from being wrapped in
+        anyio's BaseExceptionGroup (which happens when a coroutine raises
+        while inside a stdio_client TaskGroup context).
+        """
+        loop = asyncio.get_event_loop()
+        try:
+            return await loop.run_in_executor(
+                None, functools.partial(fn, *args, **kwargs)
+            )
+        except BaseException as e:
+            # Unwrap ExceptionGroup if the executor wrapped our exception
+            if hasattr(e, "exceptions") and len(e.exceptions) == 1:  # type: ignore[attr-defined]
+                raise e.exceptions[0] from None  # type: ignore[attr-defined]
+            raise
+
+    async def run_query(self, user_query: str, status_callback: Any = None, goal: str | None = None) -> str:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
         if status_callback:
             await status_callback("Connecting to tool server...")
 
         # Append new user message to conversation history
         self.messages.append({"role": "user", "content": user_query})
+
+        # Inject user preferences as contextual system message for this turn
+        prefs = load_preferences()
+        pref_context = build_preference_context(prefs)
+        if goal:
+            pref_context = f"Active Session Goal: {goal}. " + pref_context
+        if pref_context:
+            self.messages.append({
+                "role": "system",
+                "content": (
+                    f"{pref_context}\n\n"
+                    "INSTRUCTION: Focus primarily on fulfilling the user's specific request. "
+                    "Use these preferences ONLY to filter or rank recommendations relevant to what was asked. "
+                    "Do NOT invoke extra tools (like weather or event searches) if the user only asked a specific question (like book recommendations)."
+                )
+            })
 
         async with (
             stdio_client(self.server_params) as (read_stream, write_stream),
@@ -288,13 +334,19 @@ class PlanPilotAgent:
             # Tracks how many messages were added in this specific turn
             start_msg_count = len(self.messages)
 
+            # Tracks (tool_name, args_key) pairs already called this turn to prevent duplicates
+            seen_tool_calls: set[tuple[str, str]] = set()
+
             while iteration < max_iterations:
                 iteration += 1
                 if status_callback:
                     await status_callback(f"Reasoning (Step {iteration})...")
 
-                # Invoke local LLM using the full stateful messages history
-                response = self._call_llm_with_retry(self.messages, tools=ollama_tools)
+                # Invoke local LLM in a thread so the blocking network call
+                # does not stall the anyio TaskGroup managing the MCP subprocess.
+                response = await self._run_sync(
+                    self._call_llm_with_retry, self.messages, tools=ollama_tools
+                )
                 message = response.message
 
                 # Add response to messages history
@@ -311,10 +363,20 @@ class PlanPilotAgent:
                 if not tool_calls:
                     break
 
-                # Execute tool calls
+                # Execute tool calls (skip duplicates within the same turn)
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments
+
+                    # Deduplicate: skip if exact same call already made this turn
+                    call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
+                    if call_key in seen_tool_calls:
+                        if status_callback:
+                            await status_callback(
+                                f"Skipping duplicate call to '{tool_name}'..."
+                            )
+                        continue
+                    seen_tool_calls.add(call_key)
 
                     if status_callback:
                         await status_callback(
@@ -357,10 +419,11 @@ class PlanPilotAgent:
                 {
                     "role": "system",
                     "content": (
-                        "You are a quality assurance reviewer. Review the draft response and output a refined version. "
-                        "Ensure the response is accurate, neat, and highly friendly. "
-                        "Make sure your output ONLY answers the latest user query. Do NOT merge, summarize, or repeat "
-                        "unrelated items from previous turns. "
+                        "You are a quality assurance reviewer and personalisation engine. Review the draft response and output a refined version. "
+                        "Ensure the response is accurate, beautifully formatted, and highly friendly. "
+                        "If user preferences were provided, verify that recommendations respect their interests and avoid their dislikes. "
+                        "If the user asked for a weekend plan, ensure three distinct options (Cozy, Adventure, Budget) are clearly presented with markdown headers. "
+                        "Make sure your output ONLY answers the latest user query. Do NOT merge, summarize, or repeat unrelated items from previous turns. "
                         "Do NOT mention reflection or QA in the output. Output only the clean refined response."
                     ),
                 },
@@ -374,7 +437,9 @@ class PlanPilotAgent:
                 },
             ]
 
-            ref_resp = self._call_llm_with_retry(reflection_prompt)
+            ref_resp = await self._run_sync(
+                self._call_llm_with_retry, reflection_prompt
+            )
             final_answer = ref_resp.message.content or last_answer
 
             # Update the last assistant response with the QA refined answer

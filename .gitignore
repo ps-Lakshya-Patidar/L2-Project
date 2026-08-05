@@ -1,14 +1,8 @@
-# ===== Python =====
+# Python
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
-
-# Distribution / Packaging
-build/
-dist/
-*.egg-info/
-*.egg
 
 # Virtual environments
 .venv/
@@ -16,25 +10,25 @@ venv/
 env/
 ENV/
 
-# ===== IDE =====
+# IDE files
 .vscode/
 .idea/
 *.swp
 *.swo
 *~
 
-# ===== Project-specific =====
+# Project-specific
 .env
 *.log
 logs/
 
-# ===== Testing =====
+# Testing artifacts
 .coverage
 htmlcov/
 .pytest_cache/
 .mypy_cache/
 
-# ===== OS =====
+# OS generated files
 .DS_Store
 Thumbs.db
 desktop.ini

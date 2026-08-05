@@ -143,28 +143,66 @@ async def get_weather_data(city: str) -> dict[str, Any]:
 
 
 async def search_books_data(query: str) -> list[dict[str, Any]]:
-    """Search books using the Open Library API."""
+    """Search books using Open Library API with a fast fallback to DuckDuckGo web search."""
     safe_query = urllib.parse.quote(query)
-    async with httpx.AsyncClient() as client:
-        url = f"https://openlibrary.org/search.json?q={safe_query}&limit=5"
-        resp = await client.get(url)
-        resp.raise_for_status()
-        data = resp.json()
+    url = (
+        f"https://openlibrary.org/search.json?q={safe_query}&limit=5"
+        "&fields=key,title,author_name,first_publish_year,number_of_pages_median"
+    )
 
-        books = []
-        for doc in data.get("docs", []):
-            key = doc.get("key")
-            info_url = f"https://openlibrary.org{key}" if key else "Unknown"
-            books.append(
-                {
-                    "title": doc.get("title"),
-                    "author": doc.get("author_name", ["Unknown"])[0],
-                    "first_publish_year": doc.get("first_publish_year"),
-                    "number_of_pages_median": doc.get("number_of_pages_median"),
-                    "info_url": info_url,
-                }
+    # 1. Try Open Library with a crisp 3.5s timeout
+    try:
+        async with httpx.AsyncClient(timeout=3.5) as client:
+            resp = await client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                books = []
+                for doc in data.get("docs", []):
+                    key = doc.get("key")
+                    info_url = f"https://openlibrary.org{key}" if key else "Unknown"
+                    books.append(
+                        {
+                            "title": doc.get("title", "Unknown Title"),
+                            "author": doc.get("author_name", ["Unknown"])[0] if doc.get("author_name") else "Unknown",
+                            "first_publish_year": doc.get("first_publish_year"),
+                            "number_of_pages_median": doc.get("number_of_pages_median"),
+                            "info_url": info_url,
+                        }
+                    )
+                if books:
+                    return books
+    except Exception:
+        pass
+
+    # 2. Fallback to fast web search for books
+    try:
+        search_term = urllib.parse.quote(f"{query} books recommendations")
+        ddg_url = f"https://html.duckduckgo.com/html/?q={search_term}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/537.36"
             )
-        return books
+        }
+        async with httpx.AsyncClient(timeout=4.0) as client:
+            resp = await client.get(ddg_url, headers=headers)
+            if resp.status_code == 200:
+                blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
+                fallback_books = []
+                for block in blocks[1:5]:
+                    title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
+                    snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
+                    if title_match and snippet_match:
+                        title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                        snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
+                        fallback_books.append({"title": title, "author": "Web Recommendation", "info_url": snippet})
+                if fallback_books:
+                    return fallback_books
+    except Exception:
+        pass
+
+    return [{"source": "Notice", "summary": f"No book results found for '{query}'"}]
 
 
 async def discover_events_data(city: str, query: str | None = None) -> list[dict[str, str]]:
@@ -268,3 +306,104 @@ async def discover_events_data(city: str, query: str | None = None) -> list[dict
         )
 
     return results
+
+
+def compute_weekend_score(
+    weather: dict,
+    events: list[dict],
+    prefs: dict | None = None,
+) -> dict:
+    """Compute a Weekend Quality Score (0-100) based on weather, events, and user preferences.
+
+    Scoring breakdown:
+    - Weather base score: 0-50 points
+      * Clear/sunny (code 0-1): 50 pts
+      * Partly cloudy (code 2-3): 40 pts
+      * Overcast (code 45+): 25 pts
+      * Rain expected: subtract up to 20 pts based on probability
+    - Events score: 0-30 points
+      * 0 events: 0 pts | 1-2: 10 pts | 3-4: 20 pts | 5+: 30 pts
+    - Preference match bonus: 0-20 points
+      * +4 pts per event/activity that matches a user interest keyword (max 20)
+
+    Returns a dict with score (int), label (str), weather_summary (str), and tips (list[str]).
+    """
+    score = 0
+    tips: list[str] = []
+
+    # --- Weather Score ---
+    weather_code = weather.get("weather_code", 99)
+    temp = weather.get("temperature_c", 20)
+    forecast = weather.get("forecast_next_12h", {})
+    rain_expected = forecast.get("any_rain_expected", False)
+    rain_prob = forecast.get("max_rain_probability_percent", 0)
+
+    if weather_code <= 1:
+        weather_score = 50
+        weather_summary = f"Clear and sunny ({temp}°C) - perfect outdoor conditions!"
+    elif weather_code <= 3:
+        weather_score = 40
+        weather_summary = f"Partly cloudy ({temp}°C) - pleasant weather for outings."
+    elif weather_code <= 48:
+        weather_score = 25
+        weather_summary = f"Overcast ({temp}°C) - comfortable but grey skies."
+    else:
+        weather_score = 15
+        weather_summary = f"Rainy/stormy ({temp}°C) - expect wet conditions."
+
+    if rain_expected:
+        penalty = min(int(rain_prob / 5), 20)  # up to 20 pts penalty
+        weather_score = max(0, weather_score - penalty)
+        tips.append("Rain expected - have a backup indoor plan ready.")
+    score += weather_score
+
+    # --- Events Score ---
+    valid_events = [e for e in events if e.get("source") not in ("SerpAPI Notice", "Search Parser Warning")]
+    n = len(valid_events)
+    if n >= 5:
+        events_score = 30
+    elif n >= 3:
+        events_score = 20
+    elif n >= 1:
+        events_score = 10
+    else:
+        events_score = 0
+        tips.append("No events found - consider exploring parks or trying a new restaurant.")
+    score += events_score
+
+    # --- Preference Match Bonus ---
+    bonus = 0
+    if prefs and prefs.get("interests") and valid_events:
+        interests = [i.lower() for i in prefs.get("interests", [])]
+        for ev in valid_events:
+            ev_text = (ev.get("source", "") + " " + ev.get("summary", "")).lower()
+            if any(kw in ev_text for kw in interests):
+                bonus = min(bonus + 4, 20)
+    score += bonus
+
+    # --- Label ---
+    if score >= 80:
+        label = "Excellent Weekend!"
+    elif score >= 60:
+        label = "Great Weekend!"
+    elif score >= 40:
+        label = "Good Weekend"
+    elif score >= 20:
+        label = "Average Weekend"
+    else:
+        label = "Tough Weekend"
+
+    # General tips
+    if temp > 35:
+        tips.append("It's quite hot - stay hydrated and prefer evening outings.")
+    elif temp < 10:
+        tips.append("It's cold - layer up before heading outdoors.")
+
+    return {
+        "score": min(score, 100),
+        "label": label,
+        "weather_summary": weather_summary,
+        "events_found": n,
+        "preference_bonus": bonus,
+        "tips": tips,
+    }

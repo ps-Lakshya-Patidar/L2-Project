@@ -96,7 +96,7 @@ Whenever you submit a query, PlanPilot goes through the following sequence:
 Clone the repository, create a virtual environment, and install the package:
 ```powershell
 # Navigate to parent folder
-cd "C:\Users\LakshyaPatidar\GitHub\L2 Project\PlanPilot"
+cd "path/to/PlanPilot"
 
 # Create virtual environment
 python -m venv .venv
@@ -163,7 +163,7 @@ planpilot query "Is there any rain expected in Indore in the next few hours?"
 Below is an actual CLI execution log demonstrating tool listing, execution, and the reflection pass:
 
 ```powershell
-(.venv) PS C:\Users\LakshyaPatidar\GitHub\L2 Project\PlanPilot> planpilot query "What is the weather in Delhi?"
+(.venv) PS path/to/PlanPilot> planpilot query "What is the weather in Delhi?"
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                                                                             │
 │  🧭 PlanPilot                                                               │

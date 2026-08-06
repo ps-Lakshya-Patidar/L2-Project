@@ -298,21 +298,52 @@ with st.sidebar:
         )
         if provider_select == "Groq":
             groq_model_input = st.text_input("Groq Model:", value=settings.groq_model)
-            groq_key_input = st.text_input("Groq API Key:", value=settings.groq_api_key or "", type="password")
             if st.button("Apply Groq Settings"):
                 settings.llm_provider = "groq"
                 settings.groq_model = groq_model_input
-                settings.groq_api_key = groq_key_input
                 st.session_state.agent.reset()
-                st.success("Switched to Groq!")
+                st.success(f"Switched to Groq with model `{groq_model_input}`!")
                 st.rerun()
         else:
-            ollama_model_input = st.text_input("Ollama Model:", value=settings.ollama_model)
+            # Fetch local Ollama models dynamically
+            available_models = []
+            try:
+                resp = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=2.0)
+                if resp.status_code == 200:
+                    models_data = resp.json().get("models", [])
+                    available_models = [m["name"] for m in models_data if "embed" not in m["name"].lower()]
+            except Exception:
+                pass
+            
+            # Prepopulate defaults if Ollama is not accessible or doesn't have them
+            defaults = ["llama3.2:3b", "mistral:latest", "mistral:7b"]
+            for d in defaults:
+                if d not in available_models:
+                    available_models.append(d)
+            
+            # Ensure the current model is present
+            curr_model = settings.ollama_model
+            if curr_model not in available_models:
+                available_models.insert(0, curr_model)
+            
+            available_models.append("Custom Override...")
+            
+            selected_model = st.selectbox(
+                "Ollama Model:",
+                options=available_models,
+                index=available_models.index(curr_model) if curr_model in available_models else 0
+            )
+            
+            if selected_model == "Custom Override...":
+                ollama_model_input = st.text_input("Enter Model Name:", value=curr_model)
+            else:
+                ollama_model_input = selected_model
+
             if st.button("Apply Ollama Settings"):
                 settings.llm_provider = "ollama"
                 settings.ollama_model = ollama_model_input
                 st.session_state.agent.reset()
-                st.success("Switched to Ollama!")
+                st.success(f"Switched to Ollama with model `{ollama_model_input}`!")
                 st.rerun()
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)

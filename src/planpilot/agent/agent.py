@@ -89,12 +89,35 @@ class PlanPilotAgent:
             }
         ]
 
+    def _merge_system_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Combine all system messages into a single system message at the start of the list."""
+        system_contents = []
+        non_system_messages = []
+        for msg in messages:
+            if msg.get("role") == "system":
+                content = msg.get("content")
+                if content:
+                    system_contents.append(content)
+            else:
+                non_system_messages.append(msg)
+
+        if system_contents:
+            combined_system = {
+                "role": "system",
+                "content": "\n\n".join(system_contents),
+            }
+            return [combined_system] + non_system_messages
+        return non_system_messages
+
     def _prepare_groq_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Preprocess messages into OpenAI/Groq compatible schemas (preserving tool IDs)."""
         groq_msgs = []
         last_tool_ids = {}
 
-        for msg in messages:
+        # Merge system messages first to comply with standard chat templates
+        merged_messages = self._merge_system_messages(messages)
+
+        for msg in merged_messages:
             role = msg.get("role")
             content = msg.get("content")
 
@@ -141,7 +164,11 @@ class PlanPilotAgent:
     def _prepare_ollama_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Preprocess messages into Ollama-compatible message schemas."""
         ollama_msgs = []
-        for msg in messages:
+        
+        # Merge system messages first to comply with local model chat templates
+        merged_messages = self._merge_system_messages(messages)
+
+        for msg in merged_messages:
             role = msg.get("role")
             content = msg.get("content")
 

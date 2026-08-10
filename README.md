@@ -13,12 +13,10 @@ PlanPilot is a stateful, fully local AI agent orchestrator powered by **Ollama**
 - **🌐 Interactive Streamlit Portal**: A beautiful, dark-themed dashboard featuring system vital checks, model switching, and real-time terminal stdout log mirroring.
 
 ---
-- **📊 Weekend Score**: Compute a quality score for the weekend based on weather, events, and user preferences.
 
 ## 🆕 Recent Improvements
 
 - Preference memory with persistent JSON storage.
-- Weekend Score tool integrated into MCP server.
 - UI chat input repositioned below output.
 - Cleaned .gitignore and trimmed requirements.
 - Added `preferences.py` utilities.

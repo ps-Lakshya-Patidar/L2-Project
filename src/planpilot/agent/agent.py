@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import functools
 import json
+import re
 import sys
 from typing import Any
 
@@ -58,11 +59,17 @@ class PlanPilotAgent:
                 "role": "system",
                 "content": (
                     "You are PlanPilot, a Personal AI Weekend Concierge powered by the Model Context Protocol (MCP) tool server. "
-                    "The MCP server gives you access to four tools: 'get_weather', 'search_books', 'discover_events', and 'get_weekend_score'. "
+                    "The MCP server gives you access to three tools: 'get_weather', 'search_books', and 'discover_events'. "
+                    "To call a tool, you MUST write the function call directly in your response in one of these formats:\n"
+                    "- get_weather(city=\"Indore\")\n"
+                    "- discover_events(city=\"Mumbai\", query=\"music concerts\")\n"
+                    "- search_books(query=\"science fiction\")\n\n"
+                    "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
+                    "Once the tool results are returned, summarize them and present your recommendations in your next turn. "
                     "Call ONLY the tools explicitly requested by or relevant to the user query. "
                     "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
                     "For weather requests, call ONLY 'get_weather'. "
-                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weekend_score' and/or 'discover_events'. "
+                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
                     "When user preferences are provided, use them to personalise all recommendations: match interests, avoid dislikes. "
                     "Structure recommendations cleanly. For weekend plans, present 3 distinct options (Cozy, Adventure, Budget). "
                     "If the tools do not provide information, state it clearly. Do NOT invent data."
@@ -77,11 +84,17 @@ class PlanPilotAgent:
                 "role": "system",
                 "content": (
                     "You are PlanPilot, a Personal AI Weekend Concierge powered by the Model Context Protocol (MCP) tool server. "
-                    "The MCP server gives you access to four tools: 'get_weather', 'search_books', 'discover_events', and 'get_weekend_score'. "
+                    "The MCP server gives you access to three tools: 'get_weather', 'search_books', and 'discover_events'. "
+                    "To call a tool, you MUST write the function call directly in your response in one of these formats:\n"
+                    "- get_weather(city=\"Indore\")\n"
+                    "- discover_events(city=\"Mumbai\", query=\"music concerts\")\n"
+                    "- search_books(query=\"science fiction\")\n\n"
+                    "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
+                    "Once the tool results are returned, summarize them and present your recommendations in your next turn. "
                     "Call ONLY the tools explicitly requested by or relevant to the user query. "
                     "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
                     "For weather requests, call ONLY 'get_weather'. "
-                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weekend_score' and/or 'discover_events'. "
+                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
                     "When user preferences are provided, use them to personalise all recommendations: match interests, avoid dislikes. "
                     "Structure recommendations cleanly. For weekend plans, present 3 distinct options (Cozy, Adventure, Budget). "
                     "If the tools do not provide information, state it clearly. Do NOT invent data."
@@ -108,6 +121,93 @@ class PlanPilotAgent:
             }
             return [combined_system] + non_system_messages
         return non_system_messages
+
+    def _parse_text_tool_calls(self, content: str) -> list[ToolCall]:
+        """Parse text-based tool calls (like get_weather({...}) or tool(key=val)) as a fallback for weak LLMs."""
+        if not content:
+            return []
+
+        tool_calls = []
+
+        # 1. Try to find JSON arrays/objects in the text (e.g. [{"name":"get_weather", "arguments":{...}}])
+        json_pattern = r"(\[.*?\]|\{.*?\})"
+        for block_match in re.finditer(json_pattern, content, re.DOTALL):
+            block_str = block_match.group(1).strip()
+            try:
+                data = json.loads(block_str)
+                if isinstance(data, list):
+                    for item in data:
+                        if isinstance(item, dict) and "name" in item:
+                            t_name = item["name"]
+                            t_args = item.get("arguments", {})
+                            if t_name in ("get_weather", "search_books", "discover_events"):
+                                tool_calls.append(ToolCall(function=ToolFunction(name=t_name, arguments=t_args)))
+                elif isinstance(data, dict) and "name" in data:
+                    t_name = data["name"]
+                    t_args = data.get("arguments", {})
+                    if t_name in ("get_weather", "search_books", "discover_events"):
+                        tool_calls.append(ToolCall(function=ToolFunction(name=t_name, arguments=t_args)))
+            except Exception:
+                try:
+                    fixed = block_str.replace("'", '"')
+                    data = json.loads(fixed)
+                    if isinstance(data, list):
+                        for item in data:
+                            if isinstance(item, dict) and "name" in item:
+                                t_name = item["name"]
+                                t_args = item.get("arguments", {})
+                                if t_name in ("get_weather", "search_books", "discover_events"):
+                                    tool_calls.append(ToolCall(function=ToolFunction(name=t_name, arguments=t_args)))
+                    elif isinstance(data, dict) and "name" in data:
+                        t_name = data["name"]
+                        t_args = data.get("arguments", {})
+                        if t_name in ("get_weather", "search_books", "discover_events"):
+                            tool_calls.append(ToolCall(function=ToolFunction(name=t_name, arguments=t_args)))
+                except Exception:
+                    pass
+
+        # 2. If no JSON matched, fallback to parenthesized syntax get_weather(city="Ahmedabad")
+        if not tool_calls:
+            pattern = r"\b(get_weather|search_books|discover_events)\s*\((.*?)\)"
+            matches = list(re.finditer(pattern, content))
+
+            for match in matches:
+                name = match.group(1)
+                args_str = match.group(2).strip()
+
+                args = {}
+                if args_str.startswith("{") and args_str.endswith("}"):
+                    try:
+                        args = json.loads(args_str)
+                    except Exception:
+                        try:
+                            fixed = args_str.replace("'", '"')
+                            args = json.loads(fixed)
+                        except Exception:
+                            pass
+
+                if not args and args_str:
+                    kv_pattern = r"(\w+)\s*=\s*(?:['\"](.*?)['\"]|(\w+))"
+                    kv_matches = re.findall(kv_pattern, args_str)
+                    for kv in kv_matches:
+                        k = kv[0]
+                        v = kv[1] if kv[1] else kv[2]
+                        if v.isdigit():
+                            args[k] = int(v)
+                        elif v.lower() == "true":
+                            args[k] = True
+                        elif v.lower() == "false":
+                            args[k] = False
+                        elif v.lower() == "none" or v.lower() == "null":
+                            args[k] = None
+                        else:
+                            args[k] = v
+
+                tool_calls.append(
+                    ToolCall(function=ToolFunction(name=name, arguments=args))
+                )
+
+        return tool_calls
 
     def _prepare_groq_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Preprocess messages into OpenAI/Groq compatible schemas (preserving tool IDs)."""
@@ -190,9 +290,51 @@ class PlanPilotAgent:
                         "tool_calls": formatted_calls,
                     }
                 )
+            elif role == "tool":
+                ollama_msgs.append(
+                    {
+                        "role": "user",
+                        "content": f"[Tool Output from '{msg.get('name')}']:\n{content}",
+                    }
+                )
             else:
-                ollama_msgs.append(msg)
+                ollama_msgs.append(
+                    {
+                        "role": role or "user",
+                        "content": content or "",
+                    }
+                )
         return ollama_msgs
+
+    def _sanitize_tool_schema_for_groq(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Sanitize JSON schemas to comply with Groq/OpenAI tool-calling specifications."""
+        import copy
+        sanitized = copy.deepcopy(tools)
+        for tool in sanitized:
+            func = tool.get("function", {})
+            params = func.get("parameters", {})
+            properties = params.get("properties", {})
+            for prop_name, prop_data in properties.items():
+                if "type" in prop_data:
+                    p_type = prop_data["type"]
+                    if isinstance(p_type, list):
+                        filtered = [t for t in p_type if t != "null"]
+                        if len(filtered) == 1:
+                            prop_data["type"] = filtered[0]
+                        else:
+                            prop_data["type"] = "string"
+                if "anyOf" in prop_data:
+                    types = []
+                    for option in prop_data["anyOf"]:
+                        opt_type = option.get("type")
+                        if opt_type and opt_type != "null":
+                            types.append(opt_type)
+                    del prop_data["anyOf"]
+                    if types:
+                        prop_data["type"] = types[0]
+                    else:
+                        prop_data["type"] = "string"
+        return sanitized
 
     @retry(
         stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=5, max=60), reraise=True
@@ -219,9 +361,10 @@ class PlanPilotAgent:
             payload = {
                 "model": self.settings.groq_model,
                 "messages": groq_messages,
+                "temperature": 0.0,
             }
             if tools:
-                payload["tools"] = tools
+                payload["tools"] = self._sanitize_tool_schema_for_groq(tools)
                 payload["tool_choice"] = "auto"
 
             with httpx.Client(timeout=60.0) as client:
@@ -230,6 +373,8 @@ class PlanPilotAgent:
                 if resp.status_code == 429:
                     retry_after = int(resp.headers.get("retry-after", "20"))
                     time.sleep(retry_after)
+                if resp.status_code >= 400:
+                    print("GROQ API ERROR RESPONSE BODY:", resp.text, flush=True)
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -254,6 +399,9 @@ class PlanPilotAgent:
                     )
                 )
 
+            if not tool_calls and content:
+                tool_calls = self._parse_text_tool_calls(content)
+
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
 
         else:
@@ -263,6 +411,10 @@ class PlanPilotAgent:
             kwargs: dict[str, Any] = {
                 "model": self.settings.ollama_model,
                 "messages": ollama_messages,
+                "options": {
+                    "temperature": 0.0,
+                    "num_ctx": 8192,
+                }
             }
             if tools:
                 kwargs["tools"] = tools
@@ -282,6 +434,9 @@ class PlanPilotAgent:
                     tool_calls.append(
                         ToolCall(function=ToolFunction(name=tc.function.name, arguments=args))
                     )
+
+            if not tool_calls and content:
+                tool_calls = self._parse_text_tool_calls(content)
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
 
@@ -305,11 +460,61 @@ class PlanPilotAgent:
 
     async def run_query(self, user_query: str, status_callback: Any = None, goal: str | None = None) -> str:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
+        # 1. Dynamically set base system prompt based on provider to prevent syntax clashes (Groq vs Ollama)
+        provider = self.settings.llm_provider.lower().strip()
+        system_content = (
+            "You are PlanPilot, a Personal AI Weekend Concierge powered by the Model Context Protocol (MCP) tool server. "
+            "The MCP server gives you access to three tools: 'get_weather', 'search_books', and 'discover_events'. "
+        )
+        if provider == "groq":
+            system_content += (
+                "For any request about weather, books, or events, you MUST call the appropriate tool first, then answer ONLY using that data. "
+                "Call ONLY the tools explicitly requested by or relevant to the user query. "
+                "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
+                "For weather requests, call ONLY 'get_weather'. "
+                "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
+            )
+        else:
+            # Local model (Ollama)
+            system_content += (
+                "To call a tool, you MUST write the function call directly in your response in one of these formats:\n"
+                "- get_weather(city=\"Indore\")\n"
+                "- discover_events(city=\"Mumbai\", query=\"music concerts\")\n"
+                "- search_books(query=\"science fiction\")\n\n"
+                "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
+                "Once the tool results are returned, summarize them and present your recommendations in your next turn. "
+                "Call ONLY the tools explicitly requested by or relevant to the user query. "
+                "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
+                "For weather requests, call ONLY 'get_weather'. "
+                "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
+            )
+            
+        system_content += (
+            "\n\nCRITICAL TOOL ROUTING RULE: Focus STRICTLY on the user's explicit question.\n"
+            "- If the user asks specifically about weather (e.g. 'weather in Ahmedabad', 'is it raining?'), call ONLY 'get_weather' ONCE. DO NOT call 'discover_events' or 'search_books'.\n"
+            "- If the user asks specifically about events (e.g. 'upcoming events in Indore'), call ONLY 'discover_events' ONCE. DO NOT call 'get_weather' or 'search_books'.\n"
+            "- If the user asks specifically about books (e.g. 'recommend sci-fi books'), call ONLY 'search_books' ONCE. DO NOT call 'get_weather' or 'discover_events'.\n"
+            "- Execute multiple tool searches ONLY when the user explicitly requests a multi-category weekend plan (e.g. 'plan my weekend').\n"
+            "When user preferences are provided, use them to personalize recommendations for the requested topic only. Structure recommendations cleanly. "
+            "If the tools do not provide information, state it clearly. Do NOT invent data."
+        )
+
+        if self.messages and self.messages[0].get("role") == "system":
+            self.messages[0]["content"] = system_content
+        else:
+            self.messages.insert(0, {"role": "system", "content": system_content})
+
         if status_callback:
             await status_callback("Connecting to tool server...")
 
         # Append new user message to conversation history
         self.messages.append({"role": "user", "content": user_query})
+
+        # Detect single-intent query type to prevent extra tool calls
+        q_lower = user_query.lower()
+        is_weather_only = any(kw in q_lower for kw in ["weather", "temperature", "forecast", "rain", "sunny", "climate"]) and not any(kw in q_lower for kw in ["plan my weekend", "weekend plan", "what to do", "activities"])
+        is_events_only = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show"]) and not any(kw in q_lower for kw in ["plan my weekend", "weather", "book"])
+        is_books_only = any(kw in q_lower for kw in ["book", "novel", "author", "reading", "read"]) and not any(kw in q_lower for kw in ["plan my weekend", "weather", "event"])
 
         # Inject user preferences as contextual system message for this turn
         prefs = load_preferences()
@@ -321,9 +526,8 @@ class PlanPilotAgent:
                 "role": "system",
                 "content": (
                     f"{pref_context}\n\n"
-                    "INSTRUCTION: Focus primarily on fulfilling the user's specific request. "
-                    "Use these preferences ONLY to filter or rank recommendations relevant to what was asked. "
-                    "Do NOT invoke extra tools (like weather or event searches) if the user only asked a specific question (like book recommendations)."
+                    "INSTRUCTION: Focus primarily on fulfilling the user's request. "
+                    "Only call tools that are directly relevant to the user's query. Do not execute unrelated searches."
                 )
             })
 
@@ -340,9 +544,15 @@ class PlanPilotAgent:
                 await status_callback("Retrieving registered tools...")
             tools_response = await session.list_tools()
 
-            # Format tools for Ollama
+            # Format tools for Ollama, filtering by single-intent query type to prevent extra calls
             ollama_tools = []
             for tool in tools_response.tools:
+                if is_weather_only and tool.name != "get_weather":
+                    continue
+                if is_events_only and tool.name != "discover_events":
+                    continue
+                if is_books_only and tool.name != "search_books":
+                    continue
                 ollama_tools.append(
                     {
                         "type": "function",
@@ -369,24 +579,47 @@ class PlanPilotAgent:
                 if status_callback:
                     await status_callback(f"Reasoning (Step {iteration})...")
 
+                # If a tool has already executed for a single-intent query, pass tools=None
+                # so the LLM is forced to output its final natural language answer.
+                tools_for_step = ollama_tools
+                if seen_tool_calls and (is_weather_only or is_events_only or is_books_only):
+                    tools_for_step = None
+
                 # Invoke local LLM in a thread so the blocking network call
                 # does not stall the anyio TaskGroup managing the MCP subprocess.
                 response = await self._run_sync(
-                    self._call_llm_with_retry, self.messages, tools=ollama_tools
+                    self._call_llm_with_retry, self.messages, tools=tools_for_step
                 )
                 message = response.message
+                tool_calls = getattr(message, "tool_calls", None)
+
+                # Filter out irrelevant tool calls for single-intent queries
+                if tool_calls and (is_weather_only or is_events_only or is_books_only):
+                    filtered_calls = []
+                    for tc in tool_calls:
+                        t_name = tc.function.name
+                        if is_weather_only and t_name == "get_weather":
+                            filtered_calls.append(tc)
+                        elif is_events_only and t_name == "discover_events":
+                            filtered_calls.append(tc)
+                        elif is_books_only and t_name == "search_books":
+                            filtered_calls.append(tc)
+                    tool_calls = filtered_calls if filtered_calls else None
+
+                # If tool calls were made, strip pre-tool draft content from this assistant message
+                # to prevent draft placeholders (e.g. "[insert details]") from polluting chat history.
+                content_to_save = "" if tool_calls else (message.content or "")
 
                 # Add response to messages history
                 self.messages.append(
                     {
                         "role": "assistant",
-                        "content": message.content or "",
-                        "tool_calls": getattr(message, "tool_calls", None),
+                        "content": content_to_save,
+                        "tool_calls": tool_calls,
                     }
                 )
 
                 # If no tool calls, break the tool loop
-                tool_calls = getattr(message, "tool_calls", None)
                 if not tool_calls:
                     break
 
@@ -471,5 +704,8 @@ class PlanPilotAgent:
 
             # Update the last assistant response with the QA refined answer
             self.messages[-1]["content"] = final_answer
+
+            # Remove any temporary system messages we added during this turn
+            self.messages = [m for idx, m in enumerate(self.messages) if m.get("role") != "system" or idx == 0]
 
             return final_answer

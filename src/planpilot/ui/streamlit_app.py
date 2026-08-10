@@ -292,17 +292,21 @@ with st.sidebar:
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
     # --- Model Config ---
-    with st.expander("⚙️ Model Configuration", expanded=False):
+    with st.expander("⚙️ Model Configuration", expanded=True):
         provider_select = st.selectbox(
             "LLM Provider:", options=["Ollama", "Groq"], index=0 if provider == "ollama" else 1
         )
+        target_provider = provider_select.lower()
+        if target_provider != settings.llm_provider:
+            settings.llm_provider = target_provider
+            st.session_state.agent.reset()
+            st.rerun()
+
         if provider_select == "Groq":
             groq_model_input = st.text_input("Groq Model:", value=settings.groq_model)
-            if st.button("Apply Groq Settings"):
-                settings.llm_provider = "groq"
+            if groq_model_input != settings.groq_model:
                 settings.groq_model = groq_model_input
                 st.session_state.agent.reset()
-                st.success(f"Switched to Groq with model `{groq_model_input}`!")
                 st.rerun()
         else:
             # Fetch local Ollama models dynamically
@@ -316,7 +320,7 @@ with st.sidebar:
                 pass
             
             # Prepopulate defaults if Ollama is not accessible or doesn't have them
-            defaults = ["llama3.2:3b", "mistral:latest", "mistral:7b"]
+            defaults = ["llama3.2:3b"]
             for d in defaults:
                 if d not in available_models:
                     available_models.append(d)
@@ -339,11 +343,9 @@ with st.sidebar:
             else:
                 ollama_model_input = selected_model
 
-            if st.button("Apply Ollama Settings"):
-                settings.llm_provider = "ollama"
+            if ollama_model_input != settings.ollama_model:
                 settings.ollama_model = ollama_model_input
                 st.session_state.agent.reset()
-                st.success(f"Switched to Ollama with model `{ollama_model_input}`!")
                 st.rerun()
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
@@ -356,22 +358,19 @@ with st.sidebar:
 
 
 # ─────────────────── Main Layout ───────────────────
-col_main, col_panel = st.columns([3, 1], gap="large")
+# Hero header
+st.markdown('<h1 class="hero-title">🧭 PlanPilot</h1>', unsafe_allow_html=True)
+st.markdown(
+    '<p class="hero-subtitle">Your Personal AI Weekend Concierge — powered by MCP, Ollama/Groq, and real-world data</p>',
+    unsafe_allow_html=True,
+)
+st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-with col_main:
-    # Hero header
-    st.markdown('<h1 class="hero-title">🧭 PlanPilot</h1>', unsafe_allow_html=True)
-    st.markdown(
-        '<p class="hero-subtitle">Your Personal AI Weekend Concierge — powered by MCP, Ollama/Groq, and real-world data</p>',
-        unsafe_allow_html=True,
-    )
-    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+# Tabs: Chat | Preferences | Tool Trace
+tab_chat, tab_prefs, tab_trace = st.tabs(["💬 Chat", "👤 My Profile", "🔍 Tool Trace"])
 
-    # Tabs: Chat | Preferences | Tool Trace
-    tab_chat, tab_prefs, tab_trace = st.tabs(["💬 Chat", "👤 My Profile", "🔍 Tool Trace"])
-
-    # ─── Chat Tab ───
-    with tab_chat:
+# ─── Chat Tab ───
+with tab_chat:
         # Display current goal banner
         goal_emoji = {"Relax": "🛋️", "Learn": "📚", "Explore": "🗺️", "Socialize": "🎉"}
         st.info(
@@ -449,84 +448,84 @@ with col_main:
                     status_box.update(label="Something went wrong!", state="error", expanded=True)
                     st.error(f"Error: {errs}")
 
-    # ─── Preferences Tab ───
-    with tab_prefs:
-        st.markdown("### 👤 Your Profile")
-        st.caption("Preferences are saved automatically and used to personalise every recommendation.")
+# ─── Preferences Tab ───
+with tab_prefs:
+    st.markdown("### 👤 Your Profile")
+    st.caption("Preferences are saved automatically and used to personalise every recommendation.")
 
-        prefs = load_preferences()
+    prefs = load_preferences()
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            home_city = st.text_input(
-                "🏙️ Home City",
-                value=prefs.get("home_city", ""),
-                placeholder="e.g. Indore",
-                key="pref_city",
-            )
-            budget_opts = ["any", "budget", "mid-range", "premium"]
-            budget = st.selectbox(
-                "💰 Budget Preference",
-                options=budget_opts,
-                index=budget_opts.index(prefs.get("preferred_budget", "any")),
-                key="pref_budget",
-            )
-            indoor = st.checkbox(
-                "🏠 Prefer Indoor Activities",
-                value=prefs.get("indoor_preference", False),
-                key="pref_indoor",
-            )
-
-        with col_b:
-            interests_str = st.text_area(
-                "❤️ Interests (one per line)",
-                value="\n".join(prefs.get("interests", [])),
-                placeholder="rock concerts\nsci-fi books\nhiking\nfood festivals",
-                height=100,
-                key="pref_interests",
-            )
-            dislikes_str = st.text_area(
-                "🚫 Dislikes (one per line)",
-                value="\n".join(prefs.get("dislikes", [])),
-                placeholder="horror movies\ncrowded malls",
-                height=80,
-                key="pref_dislikes",
-            )
-
-        notes = st.text_input(
-            "📝 Custom Notes",
-            value=prefs.get("custom_notes", ""),
-            placeholder="e.g. Vegetarian, prefer morning events",
-            key="pref_notes",
+    col_a, col_b = st.columns(2)
+    with col_a:
+        home_city = st.text_input(
+            "🏙️ Home City",
+            value=prefs.get("home_city", ""),
+            placeholder="e.g. Indore",
+            key="pref_city",
+        )
+        budget_opts = ["any", "budget", "mid-range", "premium"]
+        budget = st.selectbox(
+            "💰 Budget Preference",
+            options=budget_opts,
+            index=budget_opts.index(prefs.get("preferred_budget", "any")),
+            key="pref_budget",
+        )
+        indoor = st.checkbox(
+            "🏠 Prefer Indoor Activities",
+            value=prefs.get("indoor_preference", False),
+            key="pref_indoor",
         )
 
-        if st.button("💾 Save Profile", type="primary", use_container_width=True):
-            new_prefs = {
-                "home_city": home_city.strip(),
-                "interests": [i.strip() for i in interests_str.strip().splitlines() if i.strip()],
-                "dislikes": [d.strip() for d in dislikes_str.strip().splitlines() if d.strip()],
-                "preferred_budget": budget,
-                "weekend_goal": st.session_state.selected_goal,
-                "indoor_preference": indoor,
-                "custom_notes": notes.strip(),
-            }
-            save_preferences(new_prefs)
-            st.success("✅ Profile saved! Preferences will apply to your next query.")
-            # Reset agent so new context is injected fresh
-            st.session_state.agent.reset()
-            st.rerun()
+    with col_b:
+        interests_str = st.text_area(
+            "❤️ Interests (one per line)",
+            value="\n".join(prefs.get("interests", [])),
+            placeholder="rock concerts\nsci-fi books\nhiking\nfood festivals",
+            height=100,
+            key="pref_interests",
+        )
+        dislikes_str = st.text_area(
+            "🚫 Dislikes (one per line)",
+            value="\n".join(prefs.get("dislikes", [])),
+            placeholder="horror movies\ncrowded malls",
+            height=80,
+            key="pref_dislikes",
+        )
 
-        # Preview
-        st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-        st.markdown("**📋 Current Profile Preview**")
-        context_str = build_preference_context(prefs)
-        if context_str:
-            st.code(context_str, language=None)
-        else:
-            st.caption("No preferences set yet. Fill in the form above to personalise PlanPilot!")
+    notes = st.text_input(
+        "📝 Custom Notes",
+        value=prefs.get("custom_notes", ""),
+        placeholder="e.g. Vegetarian, prefer morning events",
+        key="pref_notes",
+    )
 
-    # ─── Tool Trace Tab ───
-    with tab_trace:
+    if st.button("💾 Save Profile", type="primary", use_container_width=True):
+        new_prefs = {
+            "home_city": home_city.strip(),
+            "interests": [i.strip() for i in interests_str.strip().splitlines() if i.strip()],
+            "dislikes": [d.strip() for d in dislikes_str.strip().splitlines() if d.strip()],
+            "preferred_budget": budget,
+            "weekend_goal": st.session_state.selected_goal,
+            "indoor_preference": indoor,
+            "custom_notes": notes.strip(),
+        }
+        save_preferences(new_prefs)
+        st.success("✅ Profile saved! Preferences will apply to your next query.")
+        # Reset agent so new context is injected fresh
+        st.session_state.agent.reset()
+        st.rerun()
+
+    # Preview
+    st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
+    st.markdown("**📋 Current Profile Preview**")
+    context_str = build_preference_context(prefs)
+    if context_str:
+        st.code(context_str, language=None)
+    else:
+        st.caption("No preferences set yet. Fill in the form above to personalise PlanPilot!")
+
+# ─── Tool Trace Tab ───
+with tab_trace:
         st.markdown("### 🔍 Tool Usage Trace")
         st.caption("Real-time log of every MCP tool call made in this session.")
 
@@ -557,101 +556,3 @@ with col_main:
                 st.session_state.tool_trace = []
                 st.rerun()
 
-
-# ─────────────────── Right Panel: Weekend Scorecard ───────────────────
-with col_panel:
-    st.markdown("### 📊 Weekend Scorecard")
-    prefs = load_preferences()
-    score_city = prefs.get("home_city", "").strip()
-
-    if score_city:
-        if st.button("🔄 Refresh Score", use_container_width=True, key="refresh_score"):
-            st.session_state["score_data"] = None  # force refresh
-
-        score_data = st.session_state.get("score_data")
-
-        if score_data is None:
-            with st.spinner("Analysing your weekend..."):
-                try:
-                    from planpilot.tools.services import get_weather_data, discover_events_data, compute_weekend_score
-
-                    async def _fetch_score():
-                        import asyncio as _aio
-                        weather, events = await _aio.gather(
-                            get_weather_data(score_city),
-                            discover_events_data(score_city),
-                        )
-                        return compute_weekend_score(weather, events, prefs), weather, events
-
-                    _loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(_loop)
-                    try:
-                        score_data, _weather, _events = _loop.run_until_complete(_fetch_score())
-                    finally:
-                        _loop.close()
-                    score_data["_weather"] = _weather
-                    score_data["_events"] = _events
-                    st.session_state["score_data"] = score_data
-                except BaseException as e:
-                    if hasattr(e, "exceptions"):
-                        errs = "; ".join(str(sub) for sub in e.exceptions)  # type: ignore[attr-defined]
-                    else:
-                        errs = str(e)
-                    st.error(f"Score error: {errs}")
-                    score_data = None
-
-        if score_data:
-            score = score_data.get("score", 0)
-            label = score_data.get("label", "")
-            weather_sum = score_data.get("weather_summary", "")
-            tips = score_data.get("tips", [])
-            n_events = score_data.get("events_found", 0)
-            bonus = score_data.get("preference_bonus", 0)
-
-            # Score ring
-            score_color = "#10b981" if score >= 70 else "#f59e0b" if score >= 40 else "#ef4444"
-            st.markdown(
-                f'<div class="score-ring">'
-                f'<div class="score-number" style="color:{score_color};-webkit-text-fill-color:{score_color}">{score}</div>'
-                f'<div class="score-label">/100</div>'
-                f'<div class="score-title">{label}</div>'
-                f'</div>',
-                unsafe_allow_html=True,
-            )
-
-            st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-
-            # Metrics
-            col_s1, col_s2 = st.columns(2)
-            col_s1.metric("Events Found", n_events)
-            col_s2.metric("Pref Bonus", f"+{bonus}")
-
-            st.caption(f"📍 {score_city}")
-            st.caption(weather_sum)
-
-            if tips:
-                st.markdown("**💡 Tips**")
-                for tip in tips:
-                    st.markdown(f"- {tip}")
-
-            # Top events preview
-            _events = score_data.get("_events", [])
-            valid_ev = [e for e in _events if "Notice" not in e.get("source", "") and "Warning" not in e.get("source", "")]
-            if valid_ev:
-                st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
-                st.markdown("**🎟️ Top Events**")
-                for ev in valid_ev[:3]:
-                    with st.expander(ev.get("source", "Event")[:35]):
-                        st.caption(ev.get("summary", ""))
-
-    else:
-        st.info(
-            "👤 Set your **Home City** in the **My Profile** tab to see your personalised Weekend Score here!"
-        )
-        st.markdown(
-            """**The scorecard shows:**
-- 🌤️ Weather summary
-- 🎟️ Events available
-- ⭐ Preference match bonus
-- 💡 Smart weekend tips"""
-        )

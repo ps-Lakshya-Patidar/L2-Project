@@ -9,6 +9,7 @@ import re
 import urllib.parse
 from typing import Any
 import httpx
+from planpilot.utils.logger import logger
 
 # Map of common regions/states to their capital or major city for weather lookup
 REGION_FALLBACKS = {
@@ -46,11 +47,25 @@ REGION_FALLBACKS = {
 }
 
 
+def validate_city_name(city: str) -> str:
+    """Validate and sanitize city name.
+
+    Removes special characters and validates length constraints.
+    """
+    cleaned = re.sub(r"[^a-zA-Z\s\-\.\']", "", city.strip())
+    if len(cleaned) < 2:
+        raise ValueError("City name must be at least 2 characters long.")
+    if len(cleaned) > 100:
+        raise ValueError("City name exceeds maximum allowed length (100 characters).")
+    return cleaned
+
+
 async def get_weather_data(city: str) -> dict[str, Any]:
     """Fetch current weather for a city using Open-Meteo Geocoding and Forecast APIs.
 
     Returns current temperature in Celsius, windspeed in km/h, and precipitation forecast.
     """
+    city = validate_city_name(city)
     search_name = city.lower().strip()
     query_city = city
     note = None
@@ -60,86 +75,126 @@ async def get_weather_data(city: str) -> dict[str, Any]:
         query_city = fallback_city
         note = f"Showing weather for {fallback_city} (major city/capital of {region_name})"
 
-    async with httpx.AsyncClient() as client:
-        # 1. Geocode city name to lat/lon
-        geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={query_city}&count=1&language=en&format=json"
-        geo_resp = await client.get(geo_url)
-        geo_resp.raise_for_status()
-        geo_data = geo_resp.json()
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # 1. Geocode city name to lat/lon
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={query_city}&count=1&language=en&format=json"
+            geo_resp = await client.get(geo_url)
+            geo_resp.raise_for_status()
+            geo_data = geo_resp.json()
 
-        if not geo_data.get("results"):
-            return {"error": f"City '{city}' not found."}
+            if not geo_data.get("results"):
+                return {"error": f"City '{city}' not found."}
 
-        result = geo_data["results"][0]
-        lat = result["latitude"]
-        lon = result["longitude"]
-        name = result.get("name", city)
-        country = result.get("country", "")
+            result = geo_data["results"][0]
+            lat = result["latitude"]
+            lon = result["longitude"]
+            name = result.get("name", city)
+            country = result.get("country", "")
 
-        # 2. Get current weather and hourly forecast for precipitation
-        weather_url = (
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
-            f"&current_weather=true&hourly=precipitation_probability,rain&temperature_unit=celsius&wind_speed_unit=kmh"
-        )
-        weather_resp = await client.get(weather_url)
-        weather_resp.raise_for_status()
-        weather_data = weather_resp.json()
+            # 2. Get current weather, hourly forecast, and daily forecast (for weekend details)
+            weather_url = (
+                f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
+                f"&current_weather=true&hourly=precipitation_probability,rain"
+                f"&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
+                f"&timezone=auto&temperature_unit=celsius&wind_speed_unit=kmh"
+            )
+            weather_resp = await client.get(weather_url)
+            weather_resp.raise_for_status()
+            weather_data = weather_resp.json()
 
-        current = weather_data.get("current_weather", {})
-        temp = current.get("temperature")
-        windspeed = current.get("windspeed")
-        weathercode = current.get("weathercode")
+            current = weather_data.get("current_weather", {})
+            temp = current.get("temperature")
+            windspeed = current.get("windspeed")
+            weathercode = current.get("weathercode")
 
-        # Parse hourly rain forecast for the next 12 hours
-        hourly = weather_data.get("hourly", {})
-        hourly_times = hourly.get("time", [])
-        hourly_rain = hourly.get("rain", [])
-        hourly_prob = hourly.get("precipitation_probability", [])
+            # Parse hourly rain forecast for the next 12 hours
+            hourly = weather_data.get("hourly", {})
+            hourly_times = hourly.get("time", [])
+            hourly_rain = hourly.get("rain", [])
+            hourly_prob = hourly.get("precipitation_probability", [])
 
-        any_rain_expected = False
-        rain_probability_max = 0
-        rain_sum_mm = 0.0
+            any_rain_expected = False
+            rain_probability_max = 0
+            rain_sum_mm = 0.0
 
-        if hourly_rain and hourly_prob:
-            current_time_str = current.get("time")
-            start_idx = 0
-            if current_time_str in hourly_times:
-                start_idx = hourly_times.index(current_time_str)
-            else:
-                try:
-                    from datetime import datetime
+            if hourly_rain and hourly_prob:
+                current_time_str = current.get("time")
+                start_idx = 0
+                if current_time_str in hourly_times:
+                    start_idx = hourly_times.index(current_time_str)
 
-                    if current_time_str:
-                        curr_hour = datetime.fromisoformat(current_time_str).hour
-                        start_idx = min(curr_hour, len(hourly_times) - 1)
-                except Exception:
-                    start_idx = 0
+                next_12h_rain = hourly_rain[start_idx : start_idx + 12]
+                next_12h_prob = hourly_prob[start_idx : start_idx + 12]
 
-            # Slice next 12 hours
-            next_12_rain = hourly_rain[start_idx : start_idx + 12]
-            next_12_prob = hourly_prob[start_idx : start_idx + 12]
+                if next_12h_prob:
+                    rain_probability_max = max(next_12h_prob)
+                    any_rain_expected = rain_probability_max > 30
 
-            any_rain_expected = any(r > 0.1 for r in next_12_rain)
-            rain_probability_max = max(next_12_prob) if next_12_prob else 0
-            rain_sum_mm = round(sum(next_12_rain), 2) if next_12_rain else 0.0
+                if next_12h_rain:
+                    rain_sum_mm = round(sum(next_12h_rain), 1)
 
-        res = {
-            "city": name,
-            "country": country,
-            "latitude": lat,
-            "longitude": lon,
-            "temperature_c": temp,
-            "windspeed_kmh": windspeed,
-            "weather_code": weathercode,
-            "forecast_next_12h": {
-                "any_rain_expected": any_rain_expected,
-                "max_rain_probability_percent": rain_probability_max,
-                "total_expected_rain_mm": rain_sum_mm,
-            },
-        }
-        if note:
-            res["note"] = note
-        return res
+            # Parse daily forecast for the next 3 days
+            daily = weather_data.get("daily", {})
+            daily_forecast = []
+            if daily.get("time"):
+                daily_times = daily.get("time", [])
+                daily_max = daily.get("temperature_2m_max", [])
+                daily_min = daily.get("temperature_2m_min", [])
+                daily_codes = daily.get("weathercode", [])
+                daily_prob = daily.get("precipitation_probability_max", [])
+
+                for i, date_str in enumerate(daily_times[:3]):
+                    try:
+                        import datetime
+                        dt = datetime.date.fromisoformat(date_str)
+                        day_name = dt.strftime("%A")
+                    except Exception:
+                        day_name = date_str
+
+                    daily_forecast.append({
+                        "day": day_name,
+                        "date": date_str,
+                        "temp_max_c": daily_max[i] if i < len(daily_max) else None,
+                        "temp_min_c": daily_min[i] if i < len(daily_min) else None,
+                        "weather_code": daily_codes[i] if i < len(daily_codes) else None,
+                        "max_rain_probability_percent": daily_prob[i] if i < len(daily_prob) else None,
+                    })
+
+            res = {
+                "city": name,
+                "country": country,
+                "latitude": lat,
+                "longitude": lon,
+                "temperature_c": temp,
+                "windspeed_kmh": windspeed,
+                "weather_code": weathercode,
+                "forecast_next_12h": {
+                    "any_rain_expected": any_rain_expected,
+                    "max_rain_probability_percent": rain_probability_max,
+                    "total_expected_rain_mm": rain_sum_mm,
+                },
+                "daily_forecast_3_days": daily_forecast,
+            }
+            if note:
+                res["note"] = note
+            return res
+
+    except httpx.TimeoutException as e:
+        logger.error(f"Weather API request timed out for '{city}': {e}")
+        return {"error": f"Weather API request timed out for city '{city}'. Please try again."}
+    except httpx.HTTPStatusError as e:
+        logger.error(f"Weather API HTTP status error ({e.response.status_code}): {e}")
+        return {"error": f"Weather API HTTP error ({e.response.status_code}): {e.response.text}"}
+    except httpx.HTTPError as e:
+        logger.error(f"Weather API communication error: {e}")
+        return {"error": f"Weather API communication error: {str(e)}"}
+    except ValueError as e:
+        logger.warning(f"Weather validation error for '{city}': {e}")
+        return {"error": str(e)}
+    except Exception as e:
+        logger.error(f"Unexpected error fetching weather for '{city}': {e}", exc_info=True)
+        return {"error": f"Unexpected error fetching weather: {str(e)}"}
 
 
 async def search_books_data(query: str) -> list[dict[str, Any]]:
@@ -171,7 +226,7 @@ async def search_books_data(query: str) -> list[dict[str, Any]]:
                     )
                 if books:
                     return books
-    except Exception:
+    except (httpx.TimeoutException, httpx.HTTPError):
         pass
 
     # 2. Fallback to fast web search for books
@@ -182,7 +237,7 @@ async def search_books_data(query: str) -> list[dict[str, Any]]:
             "User-Agent": (
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
                 "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/537.36"
+                "Chrome/120.0.0.0 Safari/120.0.0.0"
             )
         }
         async with httpx.AsyncClient(timeout=4.0) as client:
@@ -199,14 +254,21 @@ async def search_books_data(query: str) -> list[dict[str, Any]]:
                         fallback_books.append({"title": title, "author": "Web Recommendation", "info_url": snippet})
                 if fallback_books:
                     return fallback_books
-    except Exception:
+    except (httpx.TimeoutException, httpx.HTTPError):
         pass
 
     return [{"source": "Notice", "summary": f"No book results found for '{query}'"}]
 
 
-async def discover_events_data(city: str, query: str | None = None) -> list[dict[str, str]]:
-    """Search for live events happening in a specific location using SerpAPI Google Search, with a fallback to DuckDuckGo search."""
+async def discover_events_data(city: str, query: str | None = None) -> list[dict[str, Any]]:
+    """Search for live events happening in a specific location using SerpAPI or DuckDuckGo.
+
+    If no events are retrieved, returns a clean default notice message.
+    """
+    try:
+        city = validate_city_name(city)
+    except ValueError as e:
+        return [{"source": "Notice", "summary": str(e)}]
     from planpilot.utils.config import get_settings
     settings = get_settings()
 
@@ -215,195 +277,75 @@ async def discover_events_data(city: str, query: str | None = None) -> list[dict
     else:
         search_query = f"events in {city} this weekend"
 
-    # 1. Attempt to use SerpAPI standard search if API Key is configured
-    if settings.serpapi_api_key and settings.serpapi_api_key.strip():
-        api_key = settings.serpapi_api_key.strip()
-        safe_query = urllib.parse.quote(search_query)
-        safe_location = urllib.parse.quote(city)
-        url = f"https://serpapi.com/search.json?q={safe_query}&location={safe_location}&api_key={api_key}"
+    results: list[dict[str, Any]] = []
 
+    # 1. Try SerpAPI standard search if API Key is configured
+    if settings.serpapi_api_key and settings.serpapi_api_key.strip():
         try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, timeout=15.0)
+            api_key = settings.serpapi_api_key.strip()
+            safe_query = urllib.parse.quote(search_query)
+            safe_location = urllib.parse.quote(city)
+            url = f"https://serpapi.com/search.json?q={safe_query}&location={safe_location}&api_key={api_key}"
+
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(url)
                 if resp.status_code == 200:
                     data = resp.json()
-                    events_list = data.get("events_results", [])
-                    if events_list:
-                        results = []
-                        for ev in events_list[:5]:
-                            title = ev.get("title", "Unknown Event")
-                            date_str = ev.get("date", "TBD")
-                            time_str = ev.get("time", "")
+                    events_list = data.get("events_results", []) or data.get("organic_results", [])
+                    for ev in events_list[:5]:
+                        title = ev.get("title", "Event Option")
+                        date_str = ev.get("date", "")
+                        address = ev.get("address", [])
+                        venue = address[0] if address else ""
+                        snippet = ev.get("snippet", "")
+                        link = ev.get("link", f"https://www.google.com/search?q={urllib.parse.quote(title)}")
 
-                            address = ev.get("address", [])
-                            venue = address[0] if address else "Unknown Venue"
+                        parts = [p for p in [venue, date_str, snippet] if p]
+                        summary_str = " | ".join(parts) if parts else "Event details"
+                        if link:
+                            summary_str += f" Info/Tickets: {link}"
 
-                            # Construct direct Google Search URL for the specific event to find booking pages
-                            safe_event_search = urllib.parse.quote(f"{title} {city} tickets")
-                            link = f"https://www.google.com/search?q={safe_event_search}"
-
-                            when_str = f"{date_str} at {time_str}" if time_str else date_str
-                            summary = f"Happening at {venue} ({when_str}). Info/Tickets: {link}"
-                            results.append({"source": title, "summary": summary})
+                        results.append({"source": title, "summary": summary_str})
+                    if results:
                         return results
-                    else:
-                        return [
-                            {
-                                "source": "SerpAPI Notice",
-                                "summary": f"No upcoming events matched '{search_query}' in structured search results.",
-                            }
-                        ]
-        except Exception:
-            # Fall back to DuckDuckGo search if SerpAPI request fails
+        except (httpx.TimeoutException, httpx.HTTPError):
             pass
 
-    # 2. Fallback to DuckDuckGo web scraping
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/120.0.0.0 Safari/537.36"
-        )
-    }
-    if query:
-        search_query = f"{query} in {city} this weekend"
-    else:
-        search_query = f"events in {city} this weekend"
-
-    safe_search_query = urllib.parse.quote(search_query)
-    url = f"https://html.duckduckgo.com/html/?q={safe_search_query}"
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=headers)
-        resp.raise_for_status()
-
-    blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
-    results = []
-
-    for block in blocks[1:6]:  # Extract top 5 results
-        title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
-        snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
-
-        if title_match and snippet_match:
-            title = re.sub(r"<[^>]*>", "", title_match.group(1)).strip()
-            snippet = re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip()
-
-            title = html.unescape(title)
-            snippet = html.unescape(snippet)
-
-            results.append({"source": title, "summary": snippet})
-
+    # 2. Try DuckDuckGo search if SerpAPI is not configured or fails
     if not results:
-        results.append(
-            {
-                "source": "Search Parser Warning",
-                "summary": (
-                    "The search request completed, but the HTML parsing rules did not match the page layout. "
-                    "The search engine layout may have changed, or no events matched the query. "
-                    "Please check event websites directly."
-                ),
+        try:
+            headers = {
+                "User-Agent": (
+                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "AppleWebKit/537.36 (KHTML, like Gecko) "
+                    "Chrome/120.0.0.0 Safari/120.0.0.0"
+                )
             }
-        )
+            safe_search_query = urllib.parse.quote(search_query)
+            url = f"https://html.duckduckgo.com/html/?q={safe_search_query}"
+
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
+                    for block in blocks[1:6]:
+                        title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
+                        snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
+
+                        if title_match and snippet_match:
+                            title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                            snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
+                            results.append({"source": title, "summary": snippet})
+        except (httpx.TimeoutException, httpx.HTTPError):
+            pass
+
+    # 3. If no events were retrieved, return default notice message
+    if not results:
+        return [
+            {
+                "source": "Notice",
+                "summary": f"No events retrieved for {city}.",
+            }
+        ]
 
     return results
-
-
-def compute_weekend_score(
-    weather: dict,
-    events: list[dict],
-    prefs: dict | None = None,
-) -> dict:
-    """Compute a Weekend Quality Score (0-100) based on weather, events, and user preferences.
-
-    Scoring breakdown:
-    - Weather base score: 0-50 points
-      * Clear/sunny (code 0-1): 50 pts
-      * Partly cloudy (code 2-3): 40 pts
-      * Overcast (code 45+): 25 pts
-      * Rain expected: subtract up to 20 pts based on probability
-    - Events score: 0-30 points
-      * 0 events: 0 pts | 1-2: 10 pts | 3-4: 20 pts | 5+: 30 pts
-    - Preference match bonus: 0-20 points
-      * +4 pts per event/activity that matches a user interest keyword (max 20)
-
-    Returns a dict with score (int), label (str), weather_summary (str), and tips (list[str]).
-    """
-    score = 0
-    tips: list[str] = []
-
-    # --- Weather Score ---
-    weather_code = weather.get("weather_code", 99)
-    temp = weather.get("temperature_c", 20)
-    forecast = weather.get("forecast_next_12h", {})
-    rain_expected = forecast.get("any_rain_expected", False)
-    rain_prob = forecast.get("max_rain_probability_percent", 0)
-
-    if weather_code <= 1:
-        weather_score = 50
-        weather_summary = f"Clear and sunny ({temp}°C) - perfect outdoor conditions!"
-    elif weather_code <= 3:
-        weather_score = 40
-        weather_summary = f"Partly cloudy ({temp}°C) - pleasant weather for outings."
-    elif weather_code <= 48:
-        weather_score = 25
-        weather_summary = f"Overcast ({temp}°C) - comfortable but grey skies."
-    else:
-        weather_score = 15
-        weather_summary = f"Rainy/stormy ({temp}°C) - expect wet conditions."
-
-    if rain_expected:
-        penalty = min(int(rain_prob / 5), 20)  # up to 20 pts penalty
-        weather_score = max(0, weather_score - penalty)
-        tips.append("Rain expected - have a backup indoor plan ready.")
-    score += weather_score
-
-    # --- Events Score ---
-    valid_events = [e for e in events if e.get("source") not in ("SerpAPI Notice", "Search Parser Warning")]
-    n = len(valid_events)
-    if n >= 5:
-        events_score = 30
-    elif n >= 3:
-        events_score = 20
-    elif n >= 1:
-        events_score = 10
-    else:
-        events_score = 0
-        tips.append("No events found - consider exploring parks or trying a new restaurant.")
-    score += events_score
-
-    # --- Preference Match Bonus ---
-    bonus = 0
-    if prefs and prefs.get("interests") and valid_events:
-        interests = [i.lower() for i in prefs.get("interests", [])]
-        for ev in valid_events:
-            ev_text = (ev.get("source", "") + " " + ev.get("summary", "")).lower()
-            if any(kw in ev_text for kw in interests):
-                bonus = min(bonus + 4, 20)
-    score += bonus
-
-    # --- Label ---
-    if score >= 80:
-        label = "Excellent Weekend!"
-    elif score >= 60:
-        label = "Great Weekend!"
-    elif score >= 40:
-        label = "Good Weekend"
-    elif score >= 20:
-        label = "Average Weekend"
-    else:
-        label = "Tough Weekend"
-
-    # General tips
-    if temp > 35:
-        tips.append("It's quite hot - stay hydrated and prefer evening outings.")
-    elif temp < 10:
-        tips.append("It's cold - layer up before heading outdoors.")
-
-    return {
-        "score": min(score, 100),
-        "label": label,
-        "weather_summary": weather_summary,
-        "events_found": n,
-        "preference_bonus": bonus,
-        "tips": tips,
-    }

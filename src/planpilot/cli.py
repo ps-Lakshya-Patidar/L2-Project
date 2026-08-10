@@ -107,7 +107,7 @@ def query(
         None, help="Natural language prompt for the agent. If omitted, starts interactive mode."
     ),
     model: str | None = typer.Option(
-        None, "--model", "-m", help="Override the Ollama model (default is mistral:7b)."
+        None, "--model", "-m", help="Override the Ollama model (default is llama3.2:3b)."
     ),
 ) -> None:
     """Run PlanPilot to answer your questions."""
@@ -153,7 +153,6 @@ def query(
 def ui() -> None:
     """Start the PlanPilot Streamlit Web UI portal."""
     import subprocess
-    import sys
     from pathlib import Path
 
     script_path = Path(__file__).resolve().parent / "ui" / "streamlit_app.py"

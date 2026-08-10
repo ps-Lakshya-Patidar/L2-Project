@@ -12,17 +12,13 @@ from planpilot.tools.services import (
     get_weather_data,
     search_books_data,
     discover_events_data,
-    compute_weekend_score,
 )
-from planpilot.utils.config import get_settings
-
-_settings = get_settings()
 
 mcp_server = MCPServer(
     name="planpilot",
     version="0.1.0",
     description="PlanPilot Local Tool Server",
-    instructions="A tool server providing weather, books, event discovery, and weekend scoring.",
+    instructions="A tool server providing weather, books, and event discovery.",
 )
 
 
@@ -57,13 +53,13 @@ async def search_books(
             description="The search query for books, e.g. 'science fiction', 'Lord of the Rings', 'Tolkien'"
         ),
     ]
-) -> list[dict[str, Any]] | dict[str, Any]:
+) -> list[dict[str, Any]]:
     """Search books."""
     try:
         res = await search_books_data(query)
         return res
     except Exception as e:
-        return {"error": str(e)}
+        return [{"error": str(e)}]
 
 
 @mcp_server.tool(
@@ -84,45 +80,10 @@ async def discover_events(
             description="Optional query to filter type of events, e.g. 'comedy shows', 'music concerts'"
         ),
     ] = None,
-) -> list[dict[str, str]] | dict[str, Any]:
+) -> list[dict[str, Any]]:
     """Fetch live events for a city."""
     try:
         res = await discover_events_data(city, query)
         return res
     except Exception as e:
-        return {"error": str(e)}
-
-
-@mcp_server.tool(
-    name="get_weekend_score",
-    description="Compute a Weekend Quality Score (0-100) for a city by combining weather forecast and local event availability. "
-    "Returns a score, label (e.g. 'Excellent Weekend!'), weather summary, tips, and preference match bonus.",
-)
-async def get_weekend_score(
-    city: Annotated[
-        str,
-        Field(description="The city to score the weekend for, e.g. 'Indore', 'Mumbai', 'New York'"),
-    ],
-) -> dict[str, Any]:
-    """Compute weekend score by fetching weather + events for the city."""
-    try:
-        from planpilot.utils.preferences import load_preferences
-        prefs = load_preferences()
-
-        # Fetch weather and events concurrently
-        import asyncio
-        weather, events = await asyncio.gather(
-            get_weather_data(city),
-            discover_events_data(city),
-        )
-
-        if "error" in weather:
-            return {"error": f"Could not fetch weather: {weather['error']}"}
-
-        result = compute_weekend_score(weather, events, prefs)
-        result["city"] = city
-        result["weather"] = weather
-        result["top_events"] = events[:3] if events else []
-        return result
-    except Exception as e:
-        return {"error": str(e)}
+        return [{"error": str(e)}]

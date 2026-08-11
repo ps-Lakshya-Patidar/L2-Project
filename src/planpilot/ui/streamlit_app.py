@@ -425,7 +425,11 @@ with tab_chat:
                             )
                         )
                     finally:
-                        loop.close()
+                        try:
+                            loop.close()
+                        except Exception:
+                            pass
+                        asyncio.set_event_loop(asyncio.new_event_loop())
 
                     status_box.update(label="Plan compiled! ✨", state="complete", expanded=False)
 

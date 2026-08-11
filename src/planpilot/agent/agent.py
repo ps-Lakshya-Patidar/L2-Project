@@ -67,11 +67,9 @@ class PlanPilotAgent:
                     "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
                     "Once the tool results are returned, summarize them and present your recommendations in your next turn. "
                     "Call ONLY the tools explicitly requested by or relevant to the user query. "
-                    "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
-                    "For weather requests, call ONLY 'get_weather'. "
-                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
-                    "When user preferences are provided, use them to personalise all recommendations: match interests, avoid dislikes. "
-                    "Structure recommendations cleanly. For weekend plans, present 3 distinct options (Cozy, Adventure, Budget). "
+                    "WEATHER RULE: Report ONLY the weather for the specific day requested by the user (or current weather if no specific day is mentioned). Do NOT list a 3-day forecast unless explicitly requested. "
+                    "WEEKEND PLAN RULE: Include Cozy, Adventure, and Budget-friendly plan options ONLY if the user explicitly requested a weekend plan (e.g. 'plan my weekend'). For standard weather, event, or book queries, DO NOT generate Cozy/Adventure/Budget headers—answer the user's specific request directly. "
+                    "When user preferences are provided, use them to personalise recommendations for the requested topic only. "
                     "If the tools do not provide information, state it clearly. Do NOT invent data."
                 ),
             }
@@ -92,11 +90,9 @@ class PlanPilotAgent:
                     "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
                     "Once the tool results are returned, summarize them and present your recommendations in your next turn. "
                     "Call ONLY the tools explicitly requested by or relevant to the user query. "
-                    "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
-                    "For weather requests, call ONLY 'get_weather'. "
-                    "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
-                    "When user preferences are provided, use them to personalise all recommendations: match interests, avoid dislikes. "
-                    "Structure recommendations cleanly. For weekend plans, present 3 distinct options (Cozy, Adventure, Budget). "
+                    "WEATHER RULE: Report ONLY the weather for the specific day requested by the user (or current weather if no specific day is mentioned). Do NOT list a 3-day forecast unless explicitly requested. "
+                    "WEEKEND PLAN RULE: Include Cozy, Adventure, and Budget-friendly plan options ONLY if the user explicitly requested a weekend plan (e.g. 'plan my weekend'). For standard weather, event, or book queries, DO NOT generate Cozy/Adventure/Budget headers—answer the user's specific request directly. "
+                    "When user preferences are provided, use them to personalise recommendations for the requested topic only. "
                     "If the tools do not provide information, state it clearly. Do NOT invent data."
                 ),
             }
@@ -220,10 +216,12 @@ class PlanPilotAgent:
         for msg in merged_messages:
             role = msg.get("role")
             content = msg.get("content")
+            raw_tool_calls = msg.get("tool_calls")
 
-            if role == "assistant" and msg.get("tool_calls"):
+            # --- Assistant message WITH valid tool calls ---
+            if role == "assistant" and raw_tool_calls:
                 formatted_calls = []
-                for idx, tc in enumerate(msg["tool_calls"]):
+                for idx, tc in enumerate(raw_tool_calls):
                     call_id = getattr(tc, "id", f"call_gen_{idx}")
                     name = tc.function.name
                     last_tool_ids[name] = call_id
@@ -245,6 +243,10 @@ class PlanPilotAgent:
                     }
                 )
 
+            # --- Assistant message WITHOUT tool calls (strip tool_calls key entirely) ---
+            elif role == "assistant":
+                groq_msgs.append({"role": "assistant", "content": content or ""})
+
             elif role == "tool":
                 name = msg.get("name")
                 call_id = last_tool_ids.get(name, "call_gen_0")
@@ -257,7 +259,8 @@ class PlanPilotAgent:
                     }
                 )
             else:
-                groq_msgs.append(msg)
+                # System / user messages — never include tool_calls
+                groq_msgs.append({"role": role or "user", "content": content or ""})
 
         return groq_msgs
 
@@ -399,7 +402,7 @@ class PlanPilotAgent:
                     )
                 )
 
-            if not tool_calls and content:
+            if not tool_calls and content and tools:
                 tool_calls = self._parse_text_tool_calls(content)
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
@@ -435,7 +438,7 @@ class PlanPilotAgent:
                         ToolCall(function=ToolFunction(name=tc.function.name, arguments=args))
                     )
 
-            if not tool_calls and content:
+            if not tool_calls and content and tools:
                 tool_calls = self._parse_text_tool_calls(content)
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
@@ -490,12 +493,12 @@ class PlanPilotAgent:
             )
             
         system_content += (
-            "\n\nCRITICAL TOOL ROUTING RULE: Focus STRICTLY on the user's explicit question.\n"
-            "- If the user asks specifically about weather (e.g. 'weather in Ahmedabad', 'is it raining?'), call ONLY 'get_weather' ONCE. DO NOT call 'discover_events' or 'search_books'.\n"
-            "- If the user asks specifically about events (e.g. 'upcoming events in Indore'), call ONLY 'discover_events' ONCE. DO NOT call 'get_weather' or 'search_books'.\n"
-            "- If the user asks specifically about books (e.g. 'recommend sci-fi books'), call ONLY 'search_books' ONCE. DO NOT call 'get_weather' or 'discover_events'.\n"
-            "- Execute multiple tool searches ONLY when the user explicitly requests a multi-category weekend plan (e.g. 'plan my weekend').\n"
-            "When user preferences are provided, use them to personalize recommendations for the requested topic only. Structure recommendations cleanly. "
+            "\n\nCRITICAL OUTPUT FORMATTING RULES:\n"
+            "1. WEATHER QUERY RULE: When answering weather requests, report ONLY the weather for the specific day requested by the user (or current weather if no specific day is mentioned). Do NOT list a 3-day forecast unless the user explicitly requested a multi-day or weekend weather forecast.\n"
+            "2. WEEKEND PLAN RULE: Include Cozy, Adventure, and Budget-friendly plan options ONLY if the user explicitly requested a weekend plan (e.g. 'plan my weekend'). For standard weather, event, or book queries, DO NOT generate Cozy/Adventure/Budget headers—answer the user's specific request directly.\n"
+            "3. TOOL ROUTING RULE: Focus STRICTLY on the user's explicit question. If the user asks about weather, call ONLY 'get_weather'. If the user asks about events, call ONLY 'discover_events'. If the user asks about books, call ONLY 'search_books'. Call multiple tools ONLY when the user explicitly requests a multi-category weekend plan (e.g. 'plan my weekend').\n"
+            "4. EARTH-ONLY RULE: The 'get_weather' tool ONLY works for real cities on Earth. If the user asks about weather on other planets (Mars, Jupiter, Venus, etc.), fictional places, or outer space, do NOT call any tool. Answer from your general knowledge instead and clarify that the tool only supports Earth locations.\n"
+            "When user preferences are provided, use them to personalize recommendations for the requested topic only. "
             "If the tools do not provide information, state it clearly. Do NOT invent data."
         )
 
@@ -510,11 +513,30 @@ class PlanPilotAgent:
         # Append new user message to conversation history
         self.messages.append({"role": "user", "content": user_query})
 
-        # Detect single-intent query type to prevent extra tool calls
+        # Detect domain keywords in user query
         q_lower = user_query.lower()
-        is_weather_only = any(kw in q_lower for kw in ["weather", "temperature", "forecast", "rain", "sunny", "climate"]) and not any(kw in q_lower for kw in ["plan my weekend", "weekend plan", "what to do", "activities"])
-        is_events_only = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show"]) and not any(kw in q_lower for kw in ["plan my weekend", "weather", "book"])
-        is_books_only = any(kw in q_lower for kw in ["book", "novel", "author", "reading", "read"]) and not any(kw in q_lower for kw in ["plan my weekend", "weather", "event"])
+        has_weather = any(kw in q_lower for kw in ["weather", "temperature", "forecast", "rain", "sunny", "climate"])
+        has_events = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show", "activities"])
+        has_books = any(kw in q_lower for kw in ["book", "novel", "author", "reading", "read"])
+        has_multi_plan = any(kw in q_lower for kw in ["plan", "itinerary", "schedule", "recommend", "things to do", "vibe"]) or (sum([has_weather, has_events, has_books]) > 1)
+
+        # Detect non-Earth locations — these should be answered from general knowledge, not via tools
+        _non_earth = ["mars", "jupiter", "saturn", "venus", "mercury", "neptune", "uranus", "pluto",
+                      "moon", "sun", "outer space", "space station", "iss", "europa", "titan",
+                      "narnia", "hogwarts", "mordor", "wakanda", "gotham", "atlantis", "asgard"]
+        mentions_non_earth = any(loc in q_lower for loc in _non_earth)
+        if mentions_non_earth:
+            has_weather = False
+            has_events = False
+            has_books = False
+            has_multi_plan = False
+
+        is_general_query = not (has_weather or has_events or has_books or has_multi_plan)
+
+        # Single-domain query flags (ONLY active when no other domain or multi-category request is present)
+        is_weather_only = has_weather and not (has_events or has_books or has_multi_plan)
+        is_events_only = has_events and not (has_weather or has_books or has_multi_plan)
+        is_books_only = has_books and not (has_weather or has_events or has_multi_plan)
 
         # Inject user preferences as contextual system message for this turn
         prefs = load_preferences()
@@ -531,10 +553,16 @@ class PlanPilotAgent:
                 )
             })
 
-        async with (
+        # Sanitize stale messages: remove tool_calls key if it's None/empty (prevents Groq API errors)
+        for msg in self.messages:
+            if msg.get("role") == "assistant" and "tool_calls" in msg and not msg["tool_calls"]:
+                del msg["tool_calls"]
+
+        try:
+          async with (
             stdio_client(self.server_params) as (read_stream, write_stream),
             ClientSession(read_stream, write_stream) as session,
-        ):
+          ):
             if status_callback:
                 await status_callback("Initializing protocol handshake...")
             await session.initialize()
@@ -544,25 +572,28 @@ class PlanPilotAgent:
                 await status_callback("Retrieving registered tools...")
             tools_response = await session.list_tools()
 
-            # Format tools for Ollama, filtering by single-intent query type to prevent extra calls
-            ollama_tools = []
-            for tool in tools_response.tools:
-                if is_weather_only and tool.name != "get_weather":
-                    continue
-                if is_events_only and tool.name != "discover_events":
-                    continue
-                if is_books_only and tool.name != "search_books":
-                    continue
-                ollama_tools.append(
-                    {
-                        "type": "function",
-                        "function": {
-                            "name": tool.name,
-                            "description": tool.description,
-                            "parameters": tool.input_schema,
-                        },
-                    }
-                )
+            # Format tools for LLM, filtering by query domain intent
+            if is_general_query:
+                ollama_tools = None
+            else:
+                ollama_tools = []
+                for tool in tools_response.tools:
+                    if is_weather_only and tool.name != "get_weather":
+                        continue
+                    if is_events_only and tool.name != "discover_events":
+                        continue
+                    if is_books_only and tool.name != "search_books":
+                        continue
+                    ollama_tools.append(
+                        {
+                            "type": "function",
+                            "function": {
+                                "name": tool.name,
+                                "description": tool.description,
+                                "parameters": tool.input_schema,
+                            },
+                        }
+                    )
 
             # Max iterations to prevent infinite tool calling loops
             max_iterations = 5
@@ -579,10 +610,10 @@ class PlanPilotAgent:
                 if status_callback:
                     await status_callback(f"Reasoning (Step {iteration})...")
 
-                # If a tool has already executed for a single-intent query, pass tools=None
-                # so the LLM is forced to output its final natural language answer.
+                # If general query or tool already executed for single-intent query, pass tools=None
+                # so the LLM outputs its natural language answer directly without unrequested tool calls.
                 tools_for_step = ollama_tools
-                if seen_tool_calls and (is_weather_only or is_events_only or is_books_only):
+                if is_general_query or (seen_tool_calls and (is_weather_only or is_events_only or is_books_only)):
                     tools_for_step = None
 
                 # Invoke local LLM in a thread so the blocking network call
@@ -593,8 +624,12 @@ class PlanPilotAgent:
                 message = response.message
                 tool_calls = getattr(message, "tool_calls", None)
 
+                # Force-discard any tool calls for general knowledge queries
+                if is_general_query:
+                    tool_calls = None
+
                 # Filter out irrelevant tool calls for single-intent queries
-                if tool_calls and (is_weather_only or is_events_only or is_books_only):
+                elif tool_calls and (is_weather_only or is_events_only or is_books_only):
                     filtered_calls = []
                     for tc in tool_calls:
                         t_name = tc.function.name
@@ -610,14 +645,14 @@ class PlanPilotAgent:
                 # to prevent draft placeholders (e.g. "[insert details]") from polluting chat history.
                 content_to_save = "" if tool_calls else (message.content or "")
 
-                # Add response to messages history
-                self.messages.append(
-                    {
-                        "role": "assistant",
-                        "content": content_to_save,
-                        "tool_calls": tool_calls,
-                    }
-                )
+                # Add response to messages history (omit tool_calls key when None to avoid Groq API errors)
+                assistant_msg: dict[str, Any] = {
+                    "role": "assistant",
+                    "content": content_to_save,
+                }
+                if tool_calls:
+                    assistant_msg["tool_calls"] = tool_calls
+                self.messages.append(assistant_msg)
 
                 # If no tool calls, break the tool loop
                 if not tool_calls:
@@ -681,8 +716,9 @@ class PlanPilotAgent:
                     "content": (
                         "You are a quality assurance reviewer and personalisation engine. Review the draft response and output a refined version. "
                         "Ensure the response is accurate, beautifully formatted, and highly friendly. "
+                        "WEATHER RULE: Report ONLY the weather for the specific day requested by the user (or current weather if no day is specified). Do NOT output a 3-day forecast unless explicitly requested. "
+                        "WEEKEND PLAN RULE: Include Cozy, Adventure, and Budget-friendly option headers ONLY if the user explicitly asked for a weekend plan (e.g. 'plan my weekend'). For standard weather, event, or book questions, DO NOT include Cozy/Adventure/Budget headers. "
                         "If user preferences were provided, verify that recommendations respect their interests and avoid their dislikes. "
-                        "If the user asked for a weekend plan, ensure three distinct options (Cozy, Adventure, Budget) are clearly presented with markdown headers. "
                         "Make sure your output ONLY answers the latest user query. Do NOT merge, summarize, or repeat unrelated items from previous turns. "
                         "Do NOT mention reflection or QA in the output. Output only the clean refined response."
                     ),
@@ -709,3 +745,14 @@ class PlanPilotAgent:
             self.messages = [m for idx, m in enumerate(self.messages) if m.get("role") != "system" or idx == 0]
 
             return final_answer
+
+        except BaseException as e:
+            # Catch anyio TaskGroup / BaseExceptionGroup errors and return a clean message
+            if hasattr(e, "exceptions"):
+                errs = "; ".join(str(sub) for sub in e.exceptions)
+            else:
+                errs = str(e)
+            logger.error(f"Agent loop error: {errs}", exc_info=True)
+            error_response = f"I encountered an error while processing your request: {errs}. Please try again."
+            self.messages.append({"role": "assistant", "content": error_response})
+            return error_response

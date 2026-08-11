@@ -17,8 +17,27 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Project root is 3 levels up from this file: src/planpilot/utils/config.py
-_PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent.parent
+# Dynamically locate the project root by searching for .env in parent directories.
+# Falls back to the current working directory if not found.
+
+def _find_project_root() -> Path:
+    """Walk up from this file's location looking for a .env file (max 6 levels).
+
+    Falls back to CWD if no .env is found, so pydantic-settings can still
+    read from environment variables and its own defaults.
+    """
+    anchor = Path(__file__).resolve().parent
+    for _ in range(6):
+        if (anchor / ".env").is_file():
+            return anchor
+        if anchor.parent == anchor:  # filesystem root reached
+            break
+        anchor = anchor.parent
+    # Fallback: current working directory
+    return Path.cwd()
+
+
+_PROJECT_ROOT = _find_project_root()
 
 
 class Settings(BaseSettings):

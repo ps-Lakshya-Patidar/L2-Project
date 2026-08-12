@@ -1,4 +1,4 @@
-"""Command Line Interface for Weekend Wizard.
+"""Command Line Interface for PlanPilot.
 
 Provides a CLI command for single-query runs and an interactive REPL mode.
 Uses typer for command definition and rich for beautiful terminal outputs.

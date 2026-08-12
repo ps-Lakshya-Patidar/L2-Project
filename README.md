@@ -191,4 +191,42 @@ Performing self-reflection review...
 
 ---
 
+## 📝 Example Transcript
+
+Below is a real example showing PlanPilot answering a query that invokes **weather + books** tools, followed by the self-reflection QA pass. Notice the clickable book links and explicit units.
+
+**User prompt:** `Plan a cozy Saturday in Indore. Include weather and mystery books.`
+
+```
+Connecting to tool server...
+Initializing protocol handshake...
+Retrieving registered tools...
+Reasoning (Step 1)...
+✦ Calling MCP Tool: get_weather with args {'city': 'Indore'}...
+Received output from 'get_weather'
+Reasoning (Step 2)...
+✦ Calling MCP Tool: search_books with args {'query': 'mystery books'}...
+Received output from 'search_books'
+Reasoning (Step 3)...
+Performing self-reflection review...
+```
+
+**PlanPilot Response:**
+
+> ### ☀️ Weather in Indore
+>
+> The current temperature is **32.4 °C** with a windspeed of **8.2 km/h**.
+> Rain probability over the next 12 hours: **12%** (total expected: **0.0 mm**).
+> A warm, dry day — perfect for curling up indoors with a good book!
+>
+> ### 📚 Mystery Book Recommendations
+>
+> 1. [The Mysterious Affair at Styles](https://openlibrary.org/works/OL471268W) by Agatha Christie (1920, 296 pages)
+> 2. [Still Life](https://openlibrary.org/works/OL17081952W) by Louise Penny (2005, 312 pages)
+> 3. [In the Woods](https://openlibrary.org/works/OL5735363W) by Tana French (2007, 429 pages)
+>
+> Enjoy your cozy Saturday! 🛋️📖
+
+---
+
 *Built with ❤️ as a learning project in AI agent engineering.*

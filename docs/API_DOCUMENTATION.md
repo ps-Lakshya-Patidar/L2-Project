@@ -29,7 +29,7 @@ graph TD
     Agent --> MCP[MCP Subprocess Client Session]
     MCP --> Server[MCPServer server.py]
     Server --> Weather[get_weather_data Open-Meteo]
-    Server --> Books[search_books_data Open Library / DDG]
+    Server --> Books[search_books_data Open Library]
     Server --> Events[discover_events_data SerpAPI / DDG]
 ```
 
@@ -88,7 +88,7 @@ print(weather_data)
 
 ### 2. `search_books`
 
-Search for book recommendations, authors, and metadata.
+Search for book recommendations, authors, and metadata using the Open Library API (DuckDuckGo fallback has been completely removed to ensure data reliability and consistency).
 
 #### **Parameters:**
 | Parameter | Type | Required | Description | Example |
@@ -119,6 +119,15 @@ print(books)
     "first_publish_year": 1951,
     "number_of_pages_median": 255,
     "info_url": "https://openlibrary.org/works/OL47281W"
+  }
+]
+```
+
+#### **Sample Error Response (e.g. Timeout or API error):**
+```json
+[
+  {
+    "error": "Book search timed out for 'science fiction'. Please try again."
   }
 ]
 ```
@@ -266,3 +275,23 @@ planpilot query "upcoming events in Indore" --model llama3.2:3b
 # Start Streamlit Web Portal
 planpilot ui
 ```
+
+---
+
+## 🪵 Logging & Error Handling
+
+All key steps (geocoding, API request dispatches, timeouts, and fallbacks) write structured messages to the central log file.
+
+### **Configuration:**
+Log file location: `~/.planpilot/planpilot.log`
+
+### **Logging Statements Flow Example:**
+```
+INFO  - Geocoding city: 'Indore'
+DEBUG - Geocoding hit: 'Indore' resolved successfully.
+INFO  - Fetching weather data for lat=22.71792, lon=75.8333
+DEBUG - Weather API request successful.
+INFO  - Searching books for query: 'mystery books' via Open Library
+DEBUG - Found 5 books from Open Library
+```
+

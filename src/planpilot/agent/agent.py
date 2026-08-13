@@ -50,10 +50,10 @@ class PlanPilotAgent:
 
     def __init__(self) -> None:
         self.settings = get_settings()
-        # Parameters to start the MCP server as a subprocess
         self.server_params = StdioServerParameters(
             command=sys.executable, args=["-m", "planpilot.mcp_server"], env=None
         )
+        self.last_metrics: dict[str, Any] | None = None
         self.messages: list[dict[str, Any]] = [
             {
                 "role": "system",
@@ -406,8 +406,15 @@ class PlanPilotAgent:
                     )
                 )
 
-            if not tool_calls and content and tools:
-                tool_calls = self._parse_text_tool_calls(content)
+            # Track metrics if enabled
+            usage = data.get("usage", {})
+            prompt_tokens = usage.get("prompt_tokens", 0)
+            completion_tokens = usage.get("completion_tokens", 0)
+            if hasattr(self, "last_metrics") and self.last_metrics is not None:
+                self.last_metrics["input_tokens"] += prompt_tokens
+                self.last_metrics["output_tokens"] += completion_tokens
+                self.last_metrics["total_tokens"] += (prompt_tokens + completion_tokens)
+                self.last_metrics["llm_calls"] += 1
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
 
@@ -442,8 +449,19 @@ class PlanPilotAgent:
                         ToolCall(function=ToolFunction(name=tc.function.name, arguments=args))
                     )
 
-            if not tool_calls and content and tools:
-                tool_calls = self._parse_text_tool_calls(content)
+            # Track metrics if enabled
+            if isinstance(resp, dict):
+                prompt_tokens = resp.get("prompt_eval_count", 0) or 0
+                completion_tokens = resp.get("eval_count", 0) or 0
+            else:
+                prompt_tokens = getattr(resp, "prompt_eval_count", 0) or 0
+                completion_tokens = getattr(resp, "eval_count", 0) or 0
+
+            if hasattr(self, "last_metrics") and self.last_metrics is not None:
+                self.last_metrics["input_tokens"] += prompt_tokens
+                self.last_metrics["output_tokens"] += completion_tokens
+                self.last_metrics["total_tokens"] += (prompt_tokens + completion_tokens)
+                self.last_metrics["llm_calls"] += 1
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
 
@@ -467,6 +485,19 @@ class PlanPilotAgent:
 
     async def run_query(self, user_query: str, status_callback: Any = None, goal: str | None = None) -> str:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
+        import time
+        self.last_metrics = {
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "total_tokens": 0,
+            "latency_sec": 0.0,
+            "llm_calls": 0,
+            "tool_calls": 0,
+            "model": self.settings.groq_model if self.settings.llm_provider.lower().strip() == "groq" else self.settings.ollama_model,
+            "provider": self.settings.llm_provider.upper().strip()
+        }
+        start_time = time.monotonic()
+        
         # 1. Dynamically set base system prompt based on provider to prevent syntax clashes (Groq vs Ollama)
         provider = self.settings.llm_provider.lower().strip()
         system_content = (
@@ -685,6 +716,8 @@ class PlanPilotAgent:
                     try:
                         # Call the tool through MCP client session
                         result = await session.call_tool(tool_name, arguments=tool_args)
+                        if hasattr(self, "last_metrics") and self.last_metrics is not None:
+                            self.last_metrics["tool_calls"] += 1
                         # Convert result content to a string block
                         result_text = "\n".join(
                             [block.text for block in result.content if hasattr(block, "text")]
@@ -749,6 +782,9 @@ class PlanPilotAgent:
 
             # Remove any temporary system messages we added during this turn
             self.messages = [m for idx, m in enumerate(self.messages) if m.get("role") != "system" or idx == 0]
+
+            if hasattr(self, "last_metrics") and self.last_metrics is not None:
+                self.last_metrics["latency_sec"] = round(time.monotonic() - start_time, 2)
 
             return final_answer
 

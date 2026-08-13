@@ -16,6 +16,10 @@ PlanPilot is a stateful, fully local AI agent orchestrator powered by **Ollama**
 
 ## 🆕 Recent Improvements
 
+- **📊 Evaluation Telemetry**: Real-time token counter displaying input, output, and total token usage per query step.
+- **💰 Live Cost Estimation**: Calculates real-time query costs using active model rate cards (Ollama local matches as $0.00, Groq uses custom token pricing).
+- **⏱️ Latency & Step Analytics**: Monitors query execution duration, step counts, and active tool calls.
+- **📖 Project Presentation Guide**: Added `docs/PROJECT_PRESENTATION_GUIDE.md` for explaining the codebase design during reviews.
 - Preference memory with persistent JSON storage.
 - UI chat input repositioned below output.
 - Cleaned .gitignore and trimmed requirements.

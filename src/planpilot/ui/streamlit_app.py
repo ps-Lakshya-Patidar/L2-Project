@@ -378,9 +378,52 @@ with tab_chat:
             "The agent will tailor all recommendations to match your vibe."
         )
 
+        def estimate_cost(provider: str, model: str, input_tok: int, output_tok: int) -> str:
+            prov = provider.lower().strip()
+            mod = model.lower().strip()
+            if prov == "ollama":
+                return "$0.00 (Local)"
+            # Default Groq pricing per million tokens
+            in_rate = 0.59  # default for 70b
+            out_rate = 0.79 # default for 70b
+            if "8b" in mod or "instant" in mod:
+                in_rate = 0.05
+                out_rate = 0.08
+            elif "mixtral" in mod or "32768" in mod:
+                in_rate = 0.24
+                out_rate = 0.24
+            elif "gemma" in mod:
+                in_rate = 0.20
+                out_rate = 0.20
+            cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
+            return f"${cost:.6f}"
+
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
+                if message.get("role") == "assistant" and message.get("metrics"):
+                    m = message["metrics"]
+                    cost_str = estimate_cost(m['provider'], m['model'], m['input_tokens'], m['output_tokens'])
+                    st.markdown(
+                        f"""
+                        <div style="background-color: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.15); border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 0.85rem;">
+                            <div style="font-weight: 600; color: #a78bfa; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                                📊 Evaluation Metrics
+                            </div>
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px;">
+                                <div><b>LLM:</b> <code>{m['provider']}/{m['model']}</code></div>
+                                <div><b>Latency:</b> <code>{m['latency_sec']}s</code></div>
+                                <div><b>Cost:</b> <code>{cost_str}</code></div>
+                                <div><b>LLM Steps:</b> <code>{m['llm_calls']}</code></div>
+                                <div><b>Tool Calls:</b> <code>{m['tool_calls']}</code></div>
+                                <div><b>Input Tokens:</b> <code>{m['input_tokens']}</code></div>
+                                <div><b>Output Tokens:</b> <code>{m['output_tokens']}</code></div>
+                                <div><b>Total Tokens:</b> <code>{m['total_tokens']}</code></div>
+                            </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True
+                    )
 
         if prompt := st.chat_input(
             f"Ask your Weekend Concierge... (Goal: {selected_goal})"
@@ -440,7 +483,45 @@ with tab_chat:
                     st.session_state.tool_trace.extend(trace_items)
 
                     st.markdown(response)
-                    st.session_state.chat_history.append({"role": "assistant", "content": response})
+                    
+                    metrics_to_save = getattr(st.session_state.agent, "last_metrics", None)
+                    if metrics_to_save:
+                        # Create a local copy to ensure thread safety / persistence
+                        metrics_to_save = dict(metrics_to_save)
+                    
+                    st.session_state.chat_history.append({
+                        "role": "assistant",
+                        "content": response,
+                        "metrics": metrics_to_save
+                    })
+                    
+                    if metrics_to_save:
+                        cost_val_str = estimate_cost(
+                            metrics_to_save['provider'],
+                            metrics_to_save['model'],
+                            metrics_to_save['input_tokens'],
+                            metrics_to_save['output_tokens']
+                        )
+                        st.markdown(
+                            f"""
+                            <div style="background-color: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.15); border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 0.85rem;">
+                                <div style="font-weight: 600; color: #a78bfa; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
+                                    📊 Evaluation Metrics
+                                </div>
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px;">
+                                    <div><b>LLM:</b> <code>{metrics_to_save['provider']}/{metrics_to_save['model']}</code></div>
+                                    <div><b>Latency:</b> <code>{metrics_to_save['latency_sec']}s</code></div>
+                                    <div><b>Cost:</b> <code>{cost_val_str}</code></div>
+                                    <div><b>LLM Steps:</b> <code>{metrics_to_save['llm_calls']}</code></div>
+                                    <div><b>Tool Calls:</b> <code>{metrics_to_save['tool_calls']}</code></div>
+                                    <div><b>Input Tokens:</b> <code>{metrics_to_save['input_tokens']}</code></div>
+                                    <div><b>Output Tokens:</b> <code>{metrics_to_save['output_tokens']}</code></div>
+                                    <div><b>Total Tokens:</b> <code>{metrics_to_save['total_tokens']}</code></div>
+                                </div>
+                            </div>
+                            """,
+                            unsafe_allow_html=True
+                        )
 
                 except BaseException as e:
                     # Handles both regular exceptions and Python 3.11+ BaseExceptionGroup

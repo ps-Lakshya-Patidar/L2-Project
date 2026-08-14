@@ -12,13 +12,16 @@ from planpilot.tools.services import (
     get_weather_data,
     search_books_data,
     discover_events_data,
+    find_budget_hotels_data,
+    travel_route_data,
+    famous_restaurants_data,
 )
 
 mcp_server = MCPServer(
     name="planpilot",
     version="0.1.0",
-    description="PlanPilot Local Tool Server",
-    instructions="A tool server providing weather, books, and event discovery.",
+    description="PlanPilot AI Travel Planner Tool Server",
+    instructions="A tool server providing weather, books, event discovery, budget hotels, travel routes, and famous restaurants.",
 )
 
 
@@ -87,3 +90,69 @@ async def discover_events(
         return res
     except Exception as e:
         return [{"error": str(e)}]
+
+
+@mcp_server.tool(
+    name="find_budget_hotels",
+    description="Suggest affordable budget hotels and accommodations in a city matching price constraints. "
+    "Returns hotel name, price range per night, rating, location, and budget tier.",
+)
+async def find_budget_hotels(
+    city: Annotated[
+        str,
+        Field(description="The target city name, e.g. 'Jaipur', 'Udaipur', 'Goa'"),
+    ],
+    budget: Annotated[
+        str,
+        Field(description="Budget tier: 'low' (<₹1500/night), 'mid-range' (₹1500-₹4000/night), 'premium' (>₹4000/night). Defaults to 'low'."),
+    ] = "low",
+) -> list[dict[str, Any]]:
+    """Suggest budget hotels for a city."""
+    try:
+        res = await find_budget_hotels_data(city, budget)
+        return res
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+@mcp_server.tool(
+    name="travel_route",
+    description="Calculate distance, travel time, recommended modes of transport (train, bus, flight, drive), and route summary between a source and destination city.",
+)
+async def travel_route(
+    source: Annotated[
+        str,
+        Field(description="Starting source city, e.g. 'Ahmedabad', 'Mumbai', 'Delhi'"),
+    ],
+    destination: Annotated[
+        str,
+        Field(description="Destination city, e.g. 'Jaipur', 'Udaipur', 'Goa'"),
+    ],
+) -> dict[str, Any]:
+    """Suggest optimal travel route between source and destination cities."""
+    try:
+        res = await travel_route_data(source, destination)
+        return res
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@mcp_server.tool(
+    name="famous_restaurants",
+    description="Suggest famous local restaurants, iconic food spots, specialities, ratings, and locations in a city.",
+)
+async def famous_restaurants(
+    city: Annotated[
+        str,
+        Field(description="Target city name, e.g. 'Jaipur', 'Udaipur', 'Indore', 'Mumbai'"),
+    ],
+) -> list[dict[str, Any]]:
+    """Suggest famous restaurants for a city."""
+    try:
+        res = await famous_restaurants_data(city)
+        return res
+    except Exception as e:
+        return [{"error": str(e)}]
+
+
+

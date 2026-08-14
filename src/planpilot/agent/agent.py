@@ -497,44 +497,48 @@ class PlanPilotAgent:
             "provider": self.settings.llm_provider.upper().strip()
         }
         start_time = time.monotonic()
-        
-        # 1. Dynamically set base system prompt based on provider to prevent syntax clashes (Groq vs Ollama)
+          # 1. Dynamically set base system prompt based on provider to prevent syntax clashes (Groq vs Ollama)
         provider = self.settings.llm_provider.lower().strip()
         system_content = (
-            "You are PlanPilot, a Personal AI Weekend Concierge powered by the Model Context Protocol (MCP) tool server. "
-            "The MCP server gives you access to three tools: 'get_weather', 'search_books', and 'discover_events'. "
+            "You are PlanPilot, a Personal AI Travel Planner powered by the Model Context Protocol (MCP) tool server. "
+            "The MCP server gives you access to six tools: 'get_weather', 'search_books', 'discover_events', 'find_budget_hotels', 'travel_route', and 'famous_restaurants'. "
         )
         if provider == "groq":
             system_content += (
-                "For any request about weather, books, or events, you MUST call the appropriate tool first, then answer ONLY using that data. "
-                "Call ONLY the tools explicitly requested by or relevant to the user query. "
-                "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
-                "For weather requests, call ONLY 'get_weather'. "
-                "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
+                "For requests about weather, travel routes, budget hotels, events, or famous restaurants, you MUST call the appropriate tool first. "
+                "For comprehensive travel plan requests (e.g. 'Plan a 3-day trip to Jaipur from Ahmedabad'), perform multi-step planning by calling: "
+                "1. travel_route, 2. get_weather, 3. find_budget_hotels, 4. discover_events, 5. famous_restaurants. "
             )
         else:
             # Local model (Ollama)
             system_content += (
                 "To call a tool, you MUST write the function call directly in your response in one of these formats:\n"
-                "- get_weather(city=\"Indore\")\n"
-                "- discover_events(city=\"Mumbai\", query=\"music concerts\")\n"
-                "- search_books(query=\"science fiction\")\n\n"
+                "- travel_route(source=\"Ahmedabad\", destination=\"Jaipur\")\n"
+                "- get_weather(city=\"Jaipur\")\n"
+                "- find_budget_hotels(city=\"Jaipur\", budget=\"low\")\n"
+                "- discover_events(city=\"Jaipur\")\n"
+                "- famous_restaurants(city=\"Jaipur\")\n"
+                "- search_books(query=\"travel guide\")\n\n"
                 "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
-                "Once the tool results are returned, summarize them and present your recommendations in your next turn. "
-                "Call ONLY the tools explicitly requested by or relevant to the user query. "
-                "For book requests, call ONLY 'search_books' ONCE. Do NOT issue extra event or weather searches unless asked. "
-                "For weather requests, call ONLY 'get_weather'. "
-                "For weekend planning requests (e.g. 'plan my weekend'), call 'get_weather' and/or 'discover_events'. "
+                "For comprehensive travel plan requests (e.g. 'Plan a 3-day trip to Jaipur from Ahmedabad'), perform multi-step planning by calling tools sequentially. "
             )
             
         system_content += (
             "\n\nCRITICAL OUTPUT FORMATTING RULES:\n"
-            "1. WEATHER QUERY RULE: When answering weather requests, report ONLY the weather for the specific day requested by the user (or current weather if no specific day is mentioned). Do NOT list a 3-day forecast unless the user explicitly requested a multi-day or weekend weather forecast.\n"
-            "2. WEEKEND PLAN RULE: Include Cozy, Adventure, and Budget-friendly plan options ONLY if the user explicitly requested a weekend plan (e.g. 'plan my weekend'). For standard weather, event, or book queries, DO NOT generate Cozy/Adventure/Budget headers—answer the user's specific request directly.\n"
-            "3. TOOL ROUTING RULE: Focus STRICTLY on the user's explicit question. If the user asks about weather, call ONLY 'get_weather'. If the user asks about events, call ONLY 'discover_events'. If the user asks about books, call ONLY 'search_books'. Call multiple tools ONLY when the user explicitly requests a multi-category weekend plan (e.g. 'plan my weekend').\n"
-            "4. EARTH-ONLY RULE: The 'get_weather' tool ONLY works for real cities on Earth. If the user asks about weather on other planets (Mars, Jupiter, Venus, etc.), fictional places, or outer space, do NOT call any tool. Answer from your general knowledge instead and clarify that the tool only supports Earth locations.\n"
-            "When user preferences are provided, use them to personalize recommendations for the requested topic only. "
-            "If the tools do not provide information, state it clearly. Do NOT invent data."
+            "1. TRAVEL PLAN FORMAT RULE: When a trip, itinerary, or travel plan is requested, your output MUST be structured using these exact headers:\n"
+            "   Destination:\n   <city>\n\n"
+            "   Weather:\n   <summary with °C, km/h>\n\n"
+            "   Travel Route:\n   <summary with distance, time, transport options>\n\n"
+            "   Budget Hotels:\n   <recommended stays with price range and rating>\n\n"
+            "   Events:\n   <local activities and events>\n\n"
+            "   Restaurants:\n   <famous spots and specialities>\n\n"
+            "   Suggested Itinerary:\n   Day 1: <morning, afternoon, evening activities>\n   Day 2: <activities>\n   Day 3: <activities>\n\n"
+            "   Trip Score:\n   <0-100 score and quality label>\n\n"
+            "   Reasoning:\n   <explain why these choices fit budget and preferences>\n\n"
+            "   Tools Used:\n   ✓ Weather\n   ✓ Route\n   ✓ Hotels\n   ✓ Events\n   ✓ Restaurants\n\n"
+            "2. SINGLE QUERY RULE: For single-topic queries (e.g., only weather, only hotels, or only restaurants), answer directly using that specific tool without generating a multi-day travel itinerary.\n"
+            "3. EARTH-ONLY RULE: The tools ONLY work for real locations on Earth. For fictional or non-Earth locations, answer from general knowledge.\n"
+            "When user preferences are provided, use them to personalize all recommendations. If tools do not return data, state it clearly without inventing fake options."
         )
 
         if self.messages and self.messages[0].get("role") == "system":
@@ -553,7 +557,10 @@ class PlanPilotAgent:
         has_weather = any(kw in q_lower for kw in ["weather", "temperature", "forecast", "rain", "sunny", "climate"])
         has_events = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show", "activities"])
         has_books = any(kw in q_lower for kw in ["book", "novel", "author", "reading", "read"])
-        has_multi_plan = any(kw in q_lower for kw in ["plan", "itinerary", "schedule", "recommend", "things to do", "vibe"]) or (sum([has_weather, has_events, has_books]) > 1)
+        has_hotels = any(kw in q_lower for kw in ["hotel", "stay", "resort", "hostel", "accommodation", "lodging"])
+        has_route = any(kw in q_lower for kw in ["route", "travel from", "how to reach", "transport", "distance", "how to travel"])
+        has_restaurants = any(kw in q_lower for kw in ["restaurant", "eat", "food", "dining", "dish", "delicacy", "cafe", "place to eat"])
+        has_travel_plan = any(kw in q_lower for kw in ["trip", "travel", "tour", "itinerary", "vacation", "holiday", "plan a trip", "plan my trip", "budget ₹", "budget rs", "day trip"]) or (sum([has_weather, has_events, has_hotels, has_route, has_restaurants]) >= 2)
 
         # Detect non-Earth locations — these should be answered from general knowledge, not via tools
         _non_earth = ["mars", "jupiter", "saturn", "venus", "mercury", "neptune", "uranus", "pluto",
@@ -564,14 +571,20 @@ class PlanPilotAgent:
             has_weather = False
             has_events = False
             has_books = False
-            has_multi_plan = False
+            has_hotels = False
+            has_route = False
+            has_restaurants = False
+            has_travel_plan = False
 
-        is_general_query = not (has_weather or has_events or has_books or has_multi_plan)
+        is_general_query = not (has_weather or has_events or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
 
-        # Single-domain query flags (ONLY active when no other domain or multi-category request is present)
-        is_weather_only = has_weather and not (has_events or has_books or has_multi_plan)
-        is_events_only = has_events and not (has_weather or has_books or has_multi_plan)
-        is_books_only = has_books and not (has_weather or has_events or has_multi_plan)
+        # Single-domain query flags
+        is_weather_only = has_weather and not (has_events or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
+        is_events_only = has_events and not (has_weather or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
+        is_books_only = has_books and not (has_weather or has_events or has_hotels or has_route or has_restaurants or has_travel_plan)
+        is_hotels_only = has_hotels and not (has_weather or has_events or has_books or has_route or has_restaurants or has_travel_plan)
+        is_route_only = has_route and not (has_weather or has_events or has_books or has_hotels or has_restaurants or has_travel_plan)
+        is_restaurants_only = has_restaurants and not (has_weather or has_events or has_books or has_hotels or has_route or has_travel_plan)
 
         # Inject user preferences as contextual system message for this turn
         prefs = load_preferences()
@@ -599,7 +612,7 @@ class PlanPilotAgent:
             ClientSession(read_stream, write_stream) as session,
           ):
             if status_callback:
-                await status_callback("Initializing protocol handshake...")
+                await status_callback("Connecting to tool server...")
             await session.initialize()
 
             # List tools from the server
@@ -618,6 +631,12 @@ class PlanPilotAgent:
                     if is_events_only and tool.name != "discover_events":
                         continue
                     if is_books_only and tool.name != "search_books":
+                        continue
+                    if is_hotels_only and tool.name != "find_budget_hotels":
+                        continue
+                    if is_route_only and tool.name != "travel_route":
+                        continue
+                    if is_restaurants_only and tool.name != "famous_restaurants":
                         continue
                     ollama_tools.append(
                         {
@@ -751,15 +770,21 @@ class PlanPilotAgent:
                 {
                     "role": "system",
                     "content": (
-                        "You are a quality assurance reviewer and personalisation engine. Review the draft response and output a refined version. "
-                        "Ensure the response is accurate, beautifully formatted, and highly friendly. "
-                        "WEATHER RULE: Report ONLY the weather for the specific day requested by the user (or current weather if no day is specified). Do NOT output a 3-day forecast unless explicitly requested. "
-                        "Always include units: temperature in °C, windspeed in km/h, rainfall in mm. "
-                        "BOOK FORMATTING RULE: Ensure every book title is a clickable Markdown link using the info_url from tool data. Format: [Book Title](info_url). Do NOT display raw URLs. "
-                        "WEEKEND PLAN RULE: Include Cozy, Adventure, and Budget-friendly option headers ONLY if the user explicitly asked for a weekend plan (e.g. 'plan my weekend'). For standard weather, event, or book questions, DO NOT include Cozy/Adventure/Budget headers. "
-                        "If user preferences were provided, verify that recommendations respect their interests and avoid their dislikes. "
-                        "Make sure your output ONLY answers the latest user query. Do NOT merge, summarize, or repeat unrelated items from previous turns. "
-                        "Do NOT mention reflection or QA in the output. Output only the clean refined response."
+                        "You are a quality assurance reviewer and personalisation engine for PlanPilot AI Travel Planner. Review the draft response and output a refined version. "
+                        "Ensure the response is accurate, beautifully formatted in clean markdown, and highly helpful. "
+                        "TRAVEL PLAN MANDATORY STRUCTURE: If the user asked for a trip plan or itinerary, you MUST output using these exact headers:\n\n"
+                        "Destination:\n<city>\n\n"
+                        "Weather:\n<summary with °C, km/h>\n\n"
+                        "Travel Route:\n<summary with distance, time, transport options>\n\n"
+                        "Budget Hotels:\n<recommended stays with price range and rating>\n\n"
+                        "Events:\n<local activities and events>\n\n"
+                        "Restaurants:\n<famous spots and specialities>\n\n"
+                        "Suggested Itinerary:\nDay 1: <morning, afternoon, evening activities>\nDay 2: <activities>\nDay 3: <activities>\n\n"
+                        "Trip Score:\n<0-100 score and quality label>\n\n"
+                        "Reasoning:\n<explain why recommendations fit user budget and preferences>\n\n"
+                        "Tools Used:\n✓ Weather\n✓ Route\n✓ Hotels\n✓ Events\n✓ Restaurants\n\n"
+                        "Units: Always include units (temperature in °C, windspeed in km/h, distance in km).\n"
+                        "Make sure your output ONLY answers the latest user query. Do NOT mention reflection or QA in the output."
                     ),
                 },
                 {

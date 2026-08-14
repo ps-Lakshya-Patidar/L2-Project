@@ -266,21 +266,21 @@ with st.sidebar:
 
     st.markdown('<div class="section-divider"></div>', unsafe_allow_html=True)
 
-    # --- Weekend Goal Selector ---
-    st.markdown("**🎯 Weekend Goal**")
+    # --- Travel Goal Selector ---
+    st.markdown("**✈️ Travel Vibe Goal**")
     goal_options = {
-        "Relax": "🛋️ Relax",
-        "Learn": "📚 Learn",
-        "Explore": "🗺️ Explore",
-        "Socialize": "🎉 Socialize",
+        "Budget Tour": "💰 Budget Tour",
+        "Explore": "🗺️ Sightseeing & Heritage",
+        "Relax": "🛋️ Leisure & Staycation",
+        "Adventure": "🏔️ Outdoor & Adventure",
     }
     selected_goal = st.radio(
-        "What's your vibe this weekend?",
+        "What's your vibe for this trip?",
         options=list(goal_options.keys()),
         format_func=lambda x: goal_options[x],
         index=list(goal_options.keys()).index(st.session_state.selected_goal)
         if st.session_state.selected_goal in goal_options
-        else 2,
+        else 1,
         key="goal_radio",
         label_visibility="collapsed",
     )

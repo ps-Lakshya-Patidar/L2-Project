@@ -747,9 +747,14 @@ class PlanPilotAgent:
                     if status_callback:
                         await status_callback(f"Received output from '{tool_name}'")
 
+                    # Truncate overly long tool outputs (e.g. 5+ JSON objects) to keep context under Groq 6000 TPM limit
+                    truncated_result = result_text
+                    if len(result_text) > 1500:
+                        truncated_result = result_text[:1500] + "\n...[truncated for token efficiency]"
+
                     # Append tool response
                     self.messages.append(
-                        {"role": "tool", "content": result_text, "name": tool_name}
+                        {"role": "tool", "content": truncated_result, "name": tool_name}
                     )
 
             # --- REFLECTION PASS ---

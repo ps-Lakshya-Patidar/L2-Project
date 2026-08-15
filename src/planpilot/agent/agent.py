@@ -771,26 +771,38 @@ class PlanPilotAgent:
             tool_outputs_str = "\n".join(current_turn_tool_outputs)
 
             last_answer = self.messages[-1].get("content") or ""
+            if has_travel_plan:
+                ref_sys_prompt = (
+                    "You are a quality assurance reviewer and personalisation engine for PlanPilot AI Travel Planner. Review the draft response and output a refined version. "
+                    "Ensure the response is accurate, beautifully formatted in clean markdown, and highly helpful. "
+                    "TRAVEL PLAN MANDATORY STRUCTURE: Because the user requested a full trip plan or itinerary, you MUST output using these exact headers:\n\n"
+                    "Destination:\n<city>\n\n"
+                    "Weather:\n<summary with °C, km/h>\n\n"
+                    "Travel Route:\n<summary with distance, time, transport options>\n\n"
+                    "Hotels / Accommodations:\n<recommended Stays with price range and rating>\n\n"
+                    "Events:\n<local activities and events>\n\n"
+                    "Restaurants:\n<famous spots and specialities>\n\n"
+                    "Suggested Itinerary:\nDay 1: <morning, afternoon, evening activities>\nDay 2: <activities>\nDay 3: <activities>\n\n"
+                    "Trip Score:\n<0-100 score and quality label>\n\n"
+                    "Reasoning:\n<explain why recommendations fit user budget and preferences>\n\n"
+                    "Tools Used:\n✓ Weather\n✓ Route\n✓ Hotels\n✓ Events\n✓ Restaurants\n\n"
+                    "Units: Always include units (temperature in °C, windspeed in km/h, distance in km).\n"
+                    "Do NOT mention reflection or QA in the output."
+                )
+            else:
+                ref_sys_prompt = (
+                    "You are a quality assurance reviewer and personalisation engine for PlanPilot AI Travel Planner. Review the draft response and output a refined version. "
+                    "Ensure the response is accurate, beautifully formatted in clean markdown, and highly helpful. "
+                    "SINGLE-TOPIC QUERY RULE: The user asked ONLY for a specific item (e.g. only hotels, or only weather, or only restaurants). "
+                    "Answer ONLY that specific topic directly using the provided tool output. "
+                    "Do NOT output empty filler sections (e.g., 'Weather: Unfortunately...', 'Events: Unfortunately...', 'Suggested Itinerary: Unfortunately...') for topics the user did NOT request. "
+                    "Do NOT mention reflection or QA in the output."
+                )
+
             reflection_prompt = [
                 {
                     "role": "system",
-                    "content": (
-                        "You are a quality assurance reviewer and personalisation engine for PlanPilot AI Travel Planner. Review the draft response and output a refined version. "
-                        "Ensure the response is accurate, beautifully formatted in clean markdown, and highly helpful. "
-                        "TRAVEL PLAN MANDATORY STRUCTURE: If the user asked for a trip plan or itinerary, you MUST output using these exact headers:\n\n"
-                        "Destination:\n<city>\n\n"
-                        "Weather:\n<summary with °C, km/h>\n\n"
-                        "Travel Route:\n<summary with distance, time, transport options>\n\n"
-                        "Budget Hotels:\n<recommended stays with price range and rating>\n\n"
-                        "Events:\n<local activities and events>\n\n"
-                        "Restaurants:\n<famous spots and specialities>\n\n"
-                        "Suggested Itinerary:\nDay 1: <morning, afternoon, evening activities>\nDay 2: <activities>\nDay 3: <activities>\n\n"
-                        "Trip Score:\n<0-100 score and quality label>\n\n"
-                        "Reasoning:\n<explain why recommendations fit user budget and preferences>\n\n"
-                        "Tools Used:\n✓ Weather\n✓ Route\n✓ Hotels\n✓ Events\n✓ Restaurants\n\n"
-                        "Units: Always include units (temperature in °C, windspeed in km/h, distance in km).\n"
-                        "Make sure your output ONLY answers the latest user query. Do NOT mention reflection or QA in the output."
-                    ),
+                    "content": ref_sys_prompt,
                 },
                 {
                     "role": "user",

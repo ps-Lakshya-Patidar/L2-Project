@@ -435,11 +435,22 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                         if name:
                             tourism_type = tags.get("tourism", "hotel").title()
                             addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
-                            stars = tags.get("stars", "4.3")
+                            stars = tags.get("stars")
+                            
+                            if budget_tier in ("premium", "luxury", "5 star", "high"):
+                                price_range = "₹15,000 - ₹45,000/night"
+                                rating_str = f"{stars} ⭐" if stars else "5 ⭐"
+                            elif budget_tier in ("mid-range", "medium"):
+                                price_range = "₹3,500 - ₹8,000/night"
+                                rating_str = f"{stars} ⭐" if stars else "4.5 ⭐"
+                            else:
+                                price_range = "₹800 - ₹1,800/night" if "hostel" in tourism_type.lower() else "₹1,500 - ₹3,500/night"
+                                rating_str = f"{stars} ⭐" if stars else "4.3 ⭐"
+
                             osm_results.append({
                                 "hotel_name": name,
-                                "price_range": "₹800 - ₹1,800/night" if "hostel" in tourism_type.lower() else "₹1,500 - ₹3,500/night",
-                                "rating": f"{stars} ⭐",
+                                "price_range": price_range,
+                                "rating": rating_str,
                                 "location": f"{addr} ({tourism_type})",
                                 "budget_tier": budget_tier,
                                 "source": "OpenStreetMap Overpass API"
@@ -454,7 +465,20 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
 
     # Fallback to web search scraper
     try:
-        search_query = urllib.parse.quote(f"budget hotels hostels in {city} under 1500 per night")
+        if budget_tier in ("premium", "luxury", "5 star", "high"):
+            raw_query = f"top luxury 5 star hotels in {city}"
+            fallback_price = "₹18,000 - ₹45,000/night"
+            fallback_rating = "5 ⭐"
+        elif budget_tier in ("mid-range", "medium"):
+            raw_query = f"best mid-range hotels in {city}"
+            fallback_price = "₹3,500 - ₹8,000/night"
+            fallback_rating = "4.5 ⭐"
+        else:
+            raw_query = f"budget hotels hostels in {city} under 1500 per night"
+            fallback_price = "Approx ₹800 - ₹2,000/night"
+            fallback_rating = "4.2 ⭐"
+
+        search_query = urllib.parse.quote(raw_query)
         ddg_url = f"https://html.duckduckgo.com/html/?q={search_query}"
         headers = {
             "User-Agent": (
@@ -468,7 +492,7 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
             resp.raise_for_status()
             blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
             results = []
-            for block in blocks[1:5]:
+            for block in blocks[1:6]:
                 title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
                 snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
                 if title_match and snippet_match:
@@ -476,8 +500,8 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                     snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
                     results.append({
                         "hotel_name": title[:60],
-                        "price_range": "Approx ₹800 - ₹2,000/night",
-                        "rating": "4.0 ⭐",
+                        "price_range": fallback_price,
+                        "rating": fallback_rating,
                         "location": snippet[:100],
                         "budget_tier": budget_tier
                     })

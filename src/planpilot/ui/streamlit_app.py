@@ -303,7 +303,29 @@ with st.sidebar:
             st.rerun()
 
         if provider_select == "Groq":
-            groq_model_input = st.text_input("Groq Model:", value=settings.groq_model)
+            groq_models = [
+                "llama-3.3-70b-versatile",
+                "llama-3.1-8b-instant",
+                "mixtral-8x7b-32768",
+                "gemma2-9b-it",
+                "deepseek-r1-distill-llama-70b",
+                "Custom Model..."
+            ]
+            curr_groq = settings.groq_model
+            if curr_groq not in groq_models:
+                groq_models.insert(0, curr_groq)
+
+            selected_groq = st.selectbox(
+                "Groq Model:",
+                options=groq_models,
+                index=groq_models.index(curr_groq) if curr_groq in groq_models else 0
+            )
+
+            if selected_groq == "Custom Model...":
+                groq_model_input = st.text_input("Enter Custom Groq Model:", value=curr_groq)
+            else:
+                groq_model_input = selected_groq
+
             if groq_model_input != settings.groq_model:
                 settings.groq_model = groq_model_input
                 st.session_state.agent.reset()

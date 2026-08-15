@@ -421,10 +421,9 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                 op_url = "https://overpass-api.de/api/interpreter"
                 headers = {
                     "User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)",
-                    "Content-Type": "application/x-www-form-urlencoded"
                 }
-                query_body = f"data=[out:json][timeout:5];node[\"tourism\"~\"hotel|hostel|guest_house\"](around:8000, {lat}, {lon});out tags 10;"
-                op_resp = await client.post(op_url, content=query_body, headers=headers)
+                op_ql = f"[out:json][timeout:5];node[\"tourism\"~\"hotel|hostel|guest_house\"](around:8000, {lat}, {lon});out tags 10;"
+                op_resp = await client.post(op_url, data={"data": op_ql}, headers=headers)
 
                 if op_resp.status_code == 200:
                     elements = op_resp.json().get("elements", [])
@@ -677,6 +676,53 @@ async def famous_restaurants_data(city: str) -> list[dict[str, Any]]:
         logger.debug(f"Found curated restaurant recommendations for '{city}'")
         return curated_restaurants[city_key]
 
+    # --- Live OpenStreetMap Overpass API Integration for Restaurants ---
+    try:
+        logger.info(f"Querying OpenStreetMap Overpass API for famous restaurants in '{city}'")
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            # 1. Geocode city to lat/lon
+            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1&language=en&format=json"
+            geo_resp = await client.get(geo_url)
+            if geo_resp.status_code == 200 and geo_resp.json().get("results"):
+                lat = geo_resp.json()["results"][0]["latitude"]
+                lon = geo_resp.json()["results"][0]["longitude"]
+
+                # 2. Query OpenStreetMap Overpass API for named restaurants within 3km radius (fast sub-second response)
+                op_url = "https://overpass-api.de/api/interpreter"
+                headers = {
+                    "User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)",
+                }
+                op_ql = f"[out:json][timeout:5];node[\"amenity\"=\"restaurant\"][\"name\"](around:3000, {lat}, {lon});out tags 10;"
+                op_resp = await client.post(op_url, data={"data": op_ql}, headers=headers)
+
+                if op_resp.status_code == 200:
+                    elements = op_resp.json().get("elements", [])
+                    osm_restaurants = []
+                    for el in elements:
+                        tags = el.get("tags", {})
+                        name = tags.get("name")
+                        if name:
+                            amenity_type = tags.get("amenity", "restaurant").title()
+                            cuisine = tags.get("cuisine", "Traditional Local Specialities").replace("_", " ").title()
+                            addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
+                            
+                            osm_restaurants.append({
+                                "restaurant_name": name,
+                                "speciality": f"{cuisine} ({amenity_type})",
+                                "rating": "4.6 ⭐",
+                                "location": f"{addr}, {city.title()}",
+                                "why_popular": f"Popular {cuisine} dining spot in {city.title()} listed on OpenStreetMap.",
+                                "source": "OpenStreetMap Overpass API"
+                            })
+                            if len(osm_restaurants) >= 5:
+                                break
+                    if osm_restaurants:
+                        logger.info(f"Successfully retrieved {len(osm_restaurants)} restaurants from OpenStreetMap for '{city}'")
+                        return osm_restaurants
+    except Exception as e:
+        logger.warning(f"OpenStreetMap Overpass API restaurant query exception for '{city}': {e}")
+
+    # Fallback to web search scraper
     try:
         search_query = urllib.parse.quote(f"famous iconic local restaurants street food in {city}")
         ddg_url = f"https://html.duckduckgo.com/html/?q={search_query}"

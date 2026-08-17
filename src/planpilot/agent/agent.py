@@ -381,32 +381,38 @@ class PlanPilotAgent:
                 payload["tool_choice"] = "auto"
 
             with httpx.Client(timeout=60.0) as client:
-                resp = client.post(url, json=payload, headers=headers)
-                # Handle 429 rate limit: honour Retry-After header before raising
-                if resp.status_code == 429:
-                    retry_after = int(resp.headers.get("retry-after", "20"))
-                    time.sleep(retry_after)
-                if resp.status_code >= 400:
-                    print("GROQ API ERROR RESPONSE BODY:", resp.text, flush=True)
-                    if "invalid_api_key" in resp.text or resp.status_code == 401:
-                        raise ValueError(
-                            "🔑 Invalid or Expired Groq API Key! Please get a free API key at https://console.groq.com/keys and enter it in your .env file or Streamlit sidebar."
-                        )
-                    if "not supported with this model" in resp.text and "tools" in payload:
-                        print(f"Model '{payload['model']}' does not support native JSON tools API. Falling back to text tool calling...", flush=True)
-                        payload.pop("tools", None)
-                        payload.pop("tool_choice", None)
-                        resp = client.post(url, json=payload, headers=headers)
-                    elif "model_not_found" in resp.text:
-                        if payload["model"] != "openai/gpt-oss-20b":
-                            print(f"Model '{payload['model']}' not supported on Groq API. Auto-falling back to 'openai/gpt-oss-20b'...", flush=True)
-                            self.settings.groq_model = "openai/gpt-oss-20b"
-                            payload["model"] = "openai/gpt-oss-20b"
-                            resp = client.post(url, json=payload, headers=headers)
-                        else:
+                max_retries = 3
+                for attempt in range(max_retries):
+                    resp = client.post(url, json=payload, headers=headers)
+                    if resp.status_code == 429:
+                        retry_after = int(resp.headers.get("retry-after", "15"))
+                        print(f"Groq Rate Limit (429). Waiting {retry_after + 2}s before retry...", flush=True)
+                        time.sleep(retry_after + 2)
+                        continue
+                    if resp.status_code >= 400:
+                        print("GROQ API ERROR RESPONSE BODY:", resp.text, flush=True)
+                        if "invalid_api_key" in resp.text or resp.status_code == 401:
                             raise ValueError(
-                                f"🔑 Model '{payload['model']}' is unavailable. Please verify your Groq API key at https://console.groq.com/keys."
+                                "🔑 Invalid or Expired Groq API Key! Please get a free API key at https://console.groq.com/keys and enter it in your .env file or Streamlit sidebar."
                             )
+                        if ("not supported with this model" in resp.text or "output_parse_failed" in resp.text or "Parsing failed" in resp.text) and "tools" in payload:
+                            print(f"Model '{payload['model']}' tool schema or parsing issue. Falling back to text tool calling...", flush=True)
+                            payload.pop("tools", None)
+                            payload.pop("tool_choice", None)
+                            resp = client.post(url, json=payload, headers=headers)
+                        elif "model_not_found" in resp.text:
+                            if payload["model"] != "openai/gpt-oss-20b":
+                                print(f"Model '{payload['model']}' not supported on Groq API. Auto-falling back to 'openai/gpt-oss-20b'...", flush=True)
+                                self.settings.groq_model = "openai/gpt-oss-20b"
+                                payload["model"] = "openai/gpt-oss-20b"
+                                resp = client.post(url, json=payload, headers=headers)
+                            else:
+                                raise ValueError(
+                                    f"🔑 Model '{payload['model']}' is unavailable. Please verify your Groq API key at https://console.groq.com/keys."
+                                )
+                    if resp.status_code < 400:
+                        break
+
                 resp.raise_for_status()
                 data = resp.json()
 
@@ -825,10 +831,10 @@ class PlanPilotAgent:
                     if status_callback:
                         await status_callback(f"Received output from '{tool_name}'")
 
-                    # Truncate overly long tool outputs (e.g. 5+ JSON objects) to keep context under Groq 6000 TPM limit
+                    # Truncate overly long tool outputs (e.g. 5+ JSON objects) to keep context under Groq TPM limit
                     truncated_result = result_text
-                    if len(result_text) > 1500:
-                        truncated_result = result_text[:1500] + "\n...[truncated for token efficiency]"
+                    if len(result_text) > 600:
+                        truncated_result = result_text[:600] + "\n...[truncated for token efficiency]"
 
                     # Append tool response
                     self.messages.append(

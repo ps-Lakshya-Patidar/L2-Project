@@ -9,9 +9,10 @@ from __future__ import annotations
 import logging
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+from planpilot.utils.config import _PROJECT_ROOT
 
-# Log file path in user app data directory
-_LOG_FILE = Path.home() / ".planpilot" / "planpilot.log"
+# Log file path in project logs directory
+_LOG_FILE = _PROJECT_ROOT / "logs" / "planpilot.log"
 
 
 def setup_logger(name: str = "planpilot") -> logging.Logger:

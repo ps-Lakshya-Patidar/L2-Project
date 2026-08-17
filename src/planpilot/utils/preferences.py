@@ -8,9 +8,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from planpilot.utils.config import _PROJECT_ROOT
 
-# Stored alongside the .env file at the project root
-_PREF_FILE = Path.home() / ".planpilot" / "user_preferences.json"
+# Stored in data/user_preferences.json inside the project root directory
+_PREF_FILE = _PROJECT_ROOT / "data" / "user_preferences.json"
 
 _DEFAULTS: dict[str, Any] = {
     "home_city": "",

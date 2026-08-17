@@ -214,6 +214,129 @@ class PlanPilotAgent:
 
         return tool_calls
 
+    def _prepare_gemini_tools(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Format tools into Gemini function_declarations format with uppercase types."""
+        declarations = []
+        for t in tools:
+            func = t.get("function", {})
+            params = func.get("parameters", {})
+            properties = {}
+            for pname, pdata in params.get("properties", {}).items():
+                ptype = pdata.get("type", "STRING")
+                if isinstance(ptype, list):
+                    ptype = [x for x in ptype if x != "null"][0] if ptype else "STRING"
+                properties[pname] = {
+                    "type": str(ptype).upper(),
+                    "description": pdata.get("description", ""),
+                }
+            declarations.append({
+                "name": func.get("name"),
+                "description": func.get("description", ""),
+                "parameters": {
+                    "type": "OBJECT",
+                    "properties": properties,
+                    "required": params.get("required", []),
+                }
+            })
+        return [{"function_declarations": declarations}]
+
+    def _prepare_gemini_payload(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> dict[str, Any]:
+        """Format PlanPilot messages for Google Gemini generateContent API with system_instruction."""
+        contents = []
+        system_texts = []
+        merged = self._merge_system_messages(messages)
+        for msg in merged:
+            role = msg.get("role")
+            content = msg.get("content") or ""
+            if role == "system":
+                system_texts.append(content)
+            elif role == "user":
+                contents.append({"role": "user", "parts": [{"text": content}]})
+            elif role == "assistant":
+                parts = []
+                if content:
+                    parts.append({"text": content})
+                if msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        parts.append({"functionCall": {"name": tc.function.name, "args": tc.function.arguments}})
+                if not parts:
+                    parts.append({"text": ""})
+                contents.append({"role": "model", "parts": parts})
+            elif role == "tool":
+                tname = msg.get("name", "tool")
+                contents.append({"role": "user", "parts": [{"text": f"[Tool Output from '{tname}']:\n{content}"}]})
+
+        if not contents:
+            contents.append({"role": "user", "parts": [{"text": "Hello"}]})
+
+        payload: dict[str, Any] = {
+            "contents": contents,
+            "generationConfig": {"temperature": 0.0},
+        }
+        if system_texts:
+            payload["system_instruction"] = {"parts": [{"text": "\n\n".join(system_texts)}]}
+        if tools:
+            payload["tools"] = self._prepare_gemini_tools(tools)
+        return payload
+
+    def _call_gemini(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> LLMResponse:
+        """Call Google Gemini generateContent API."""
+        import httpx
+        key = self.settings.google_api_key
+        model = self.settings.gemini_model
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
+        payload = self._prepare_gemini_payload(messages, tools)
+
+        with httpx.Client(timeout=45.0) as client:
+            resp = client.post(url, json=payload)
+            if resp.status_code >= 400:
+                print("GEMINI API ERROR RESPONSE BODY:", resp.text, flush=True)
+                resp.raise_for_status()
+            data = resp.json()
+
+        candidates = data.get("candidates", [])
+        if not candidates:
+            return LLMResponse(message=LLMMessage(content="", tool_calls=[]))
+
+        content_parts = candidates[0].get("content", {}).get("parts", [])
+        text_content = ""
+        tool_calls: list[ToolCall] = []
+
+        for p in content_parts:
+            if "text" in p:
+                text_content += p["text"]
+            if "functionCall" in p:
+                fc = p["functionCall"]
+                fname = fc.get("name")
+                fargs = fc.get("args", {})
+                tool_calls.append(
+                    ToolCall(
+                        id=fc.get("id", f"call_{len(tool_calls)+1}"),
+                        function=ToolFunction(name=fname, arguments=fargs),
+                    )
+                )
+
+        if text_content:
+            text_content = re.sub(r"<think>.*?</think>", "", text_content, flags=re.DOTALL).strip()
+
+        if not tool_calls and text_content:
+            tool_calls = self._parse_text_tool_calls(text_content)
+
+        # Track usage metrics
+        usage = data.get("usageMetadata", {})
+        prompt_tokens = usage.get("promptTokenCount", 0)
+        completion_tokens = usage.get("candidatesTokenCount", 0)
+        if hasattr(self, "last_metrics") and self.last_metrics is not None:
+            self.last_metrics["input_tokens"] += prompt_tokens
+            self.last_metrics["output_tokens"] += completion_tokens
+            self.last_metrics["total_tokens"] += (prompt_tokens + completion_tokens)
+            self.last_metrics["llm_calls"] += 1
+
+        return LLMResponse(message=LLMMessage(content=text_content, tool_calls=tool_calls))
+
     def _prepare_groq_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Preprocess messages into OpenAI/Groq compatible schemas (preserving tool IDs)."""
         groq_msgs = []
@@ -360,7 +483,10 @@ class PlanPilotAgent:
 
         provider = self.settings.llm_provider.lower().strip()
 
-        if provider == "groq" and self.settings.groq_api_key:
+        if provider == "gemini" and self.settings.google_api_key:
+            return self._call_gemini(messages, tools)
+
+        elif provider == "groq" and self.settings.groq_api_key:
             # 1. Format messages for Groq
             groq_messages = self._prepare_groq_messages(messages)
 

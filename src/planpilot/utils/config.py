@@ -70,17 +70,29 @@ class Settings(BaseSettings):
         description="Timeout in seconds for Ollama API calls.",
     )
 
-    # --- Groq ---
+    # --- LLM Provider Selection ---
     llm_provider: str = Field(
-        default="ollama",
-        description="LLM Provider to use ('ollama' or 'groq').",
+        default="gemini",
+        description="LLM Provider to use ('gemini', 'groq', or 'ollama').",
     )
+
+    # --- Google Gemini ---
+    google_api_key: str | None = Field(
+        default=None,
+        description="API key for Google Gemini / Google AI Studio.",
+    )
+    gemini_model: str = Field(
+        default="gemini-3.6-flash",
+        description="Google Gemini model to use (e.g. gemini-3.6-flash, gemini-3.7-flash).",
+    )
+
+    # --- Groq ---
     groq_api_key: str | None = Field(
         default=None,
         description="API key for Groq Cloud.",
     )
     groq_model: str = Field(
-        default="llama-3.3-70b-versatile",
+        default="openai/gpt-oss-20b",
         description="Groq model to use.",
     )
 

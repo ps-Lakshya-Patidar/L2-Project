@@ -240,7 +240,13 @@ with st.sidebar:
     st.markdown("**⚡ System Vitals**")
     provider = settings.llm_provider.lower().strip()
 
-    if provider == "groq":
+    if provider == "gemini":
+        if settings.google_api_key:
+            st.markdown('<span class="badge-online">🟢 Google Gemini</span>', unsafe_allow_html=True)
+            st.caption(f"Model: `{settings.gemini_model}`")
+        else:
+            st.markdown('<span class="badge-offline">🔴 Google API Key Missing</span>', unsafe_allow_html=True)
+    elif provider == "groq":
         if settings.groq_api_key:
             st.markdown('<span class="badge-online">🟢 Groq Cloud</span>', unsafe_allow_html=True)
             st.caption(f"Model: `{settings.groq_model}`")
@@ -293,8 +299,15 @@ with st.sidebar:
 
     # --- Model Config ---
     with st.expander("⚙️ Model Configuration", expanded=True):
+        provider_options = ["Gemini", "Groq", "Ollama"]
+        current_idx = 0
+        if provider == "groq":
+            current_idx = 1
+        elif provider == "ollama":
+            current_idx = 2
+
         provider_select = st.selectbox(
-            "LLM Provider:", options=["Ollama", "Groq"], index=0 if provider == "ollama" else 1
+            "LLM Provider:", options=provider_options, index=current_idx
         )
         target_provider = provider_select.lower()
         if target_provider != settings.llm_provider:
@@ -302,7 +315,34 @@ with st.sidebar:
             st.session_state.agent.reset()
             st.rerun()
 
-        if provider_select == "Groq":
+        if provider_select == "Gemini":
+            gemini_models = [
+                "gemini-3.6-flash",
+                "gemini-3.7-flash",
+                "gemini-3.5-flash",
+                "gemini-flash-latest",
+                "Custom Model..."
+            ]
+            curr_gem = settings.gemini_model
+            if curr_gem not in gemini_models:
+                gemini_models.insert(0, curr_gem)
+
+            selected_gem = st.selectbox(
+                "Gemini Model:",
+                options=gemini_models,
+                index=gemini_models.index(curr_gem) if curr_gem in gemini_models else 0
+            )
+            if selected_gem == "Custom Model...":
+                gem_input = st.text_input("Enter Gemini Model:", value=curr_gem)
+            else:
+                gem_input = selected_gem
+
+            if gem_input != settings.gemini_model:
+                settings.gemini_model = gem_input
+                st.session_state.agent.reset()
+                st.rerun()
+
+        elif provider_select == "Groq":
             groq_models = [
                 "openai/gpt-oss-20b",
                 "qwen/qwen3.6-27b",
@@ -403,18 +443,21 @@ with tab_chat:
             mod = model.lower().strip()
             if prov == "ollama":
                 return "$0.00 (Local)"
+            if prov == "gemini":
+                # Google Gemini 3.6 / 3.7 / 2.5 Flash Free Tier
+                in_rate = 0.075
+                out_rate = 0.30
+                cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
+                return f"${cost:.6f} (Free Tier)"
             # Default Groq pricing per million tokens
-            in_rate = 0.59  # default for 70b
-            out_rate = 0.79 # default for 70b
-            if "8b" in mod or "instant" in mod:
-                in_rate = 0.05
-                out_rate = 0.08
-            elif "mixtral" in mod or "32768" in mod:
+            in_rate = 0.05
+            out_rate = 0.08
+            if "70b" in mod:
+                in_rate = 0.59
+                out_rate = 0.79
+            elif "mixtral" in mod:
                 in_rate = 0.24
                 out_rate = 0.24
-            elif "gemma" in mod:
-                in_rate = 0.20
-                out_rate = 0.20
             cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
             return f"${cost:.6f}"
 

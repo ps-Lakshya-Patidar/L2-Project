@@ -304,11 +304,9 @@ with st.sidebar:
 
         if provider_select == "Groq":
             groq_models = [
-                "llama-3.3-70b-versatile",
-                "llama-3.1-8b-instant",
-                "mixtral-8x7b-32768",
-                "gemma2-9b-it",
-                "deepseek-r1-distill-llama-70b",
+                "openai/gpt-oss-20b",
+                "qwen/qwen3.6-27b",
+                "openai/gpt-oss-120b",
                 "Custom Model..."
             ]
             curr_groq = settings.groq_model
@@ -479,22 +477,13 @@ with tab_chat:
                         status_box.update(label=msg)
 
                 try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        response = loop.run_until_complete(
-                            st.session_state.agent.run_query(
-                                prompt,
-                                status_callback=ui_callback,
-                                goal=st.session_state.selected_goal,
-                            )
+                    response = asyncio.run(
+                        st.session_state.agent.run_query(
+                            prompt,
+                            status_callback=ui_callback,
+                            goal=st.session_state.selected_goal,
                         )
-                    finally:
-                        try:
-                            loop.close()
-                        except Exception:
-                            pass
-                        asyncio.set_event_loop(asyncio.new_event_loop())
+                    )
 
                     status_box.update(label="Plan compiled! ✨", state="complete", expanded=False)
 

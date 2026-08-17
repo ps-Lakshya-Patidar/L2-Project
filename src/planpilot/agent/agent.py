@@ -19,6 +19,7 @@ from mcp.client.stdio import stdio_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from planpilot.utils.config import get_settings
+from planpilot.utils.logger import logger
 from planpilot.utils.preferences import (
     load_preferences,
     build_preference_context,
@@ -374,7 +375,8 @@ class PlanPilotAgent:
                 "messages": groq_messages,
                 "temperature": 0.0,
             }
-            if tools:
+            is_compound_model = "compound" in self.settings.groq_model.lower() or "prompt-guard" in self.settings.groq_model.lower()
+            if tools and not is_compound_model:
                 payload["tools"] = self._sanitize_tool_schema_for_groq(tools)
                 payload["tool_choice"] = "auto"
 
@@ -386,11 +388,32 @@ class PlanPilotAgent:
                     time.sleep(retry_after)
                 if resp.status_code >= 400:
                     print("GROQ API ERROR RESPONSE BODY:", resp.text, flush=True)
+                    if "invalid_api_key" in resp.text or resp.status_code == 401:
+                        raise ValueError(
+                            "🔑 Invalid or Expired Groq API Key! Please get a free API key at https://console.groq.com/keys and enter it in your .env file or Streamlit sidebar."
+                        )
+                    if "not supported with this model" in resp.text and "tools" in payload:
+                        print(f"Model '{payload['model']}' does not support native JSON tools API. Falling back to text tool calling...", flush=True)
+                        payload.pop("tools", None)
+                        payload.pop("tool_choice", None)
+                        resp = client.post(url, json=payload, headers=headers)
+                    elif "model_not_found" in resp.text:
+                        if payload["model"] != "openai/gpt-oss-20b":
+                            print(f"Model '{payload['model']}' not supported on Groq API. Auto-falling back to 'openai/gpt-oss-20b'...", flush=True)
+                            self.settings.groq_model = "openai/gpt-oss-20b"
+                            payload["model"] = "openai/gpt-oss-20b"
+                            resp = client.post(url, json=payload, headers=headers)
+                        else:
+                            raise ValueError(
+                                f"🔑 Model '{payload['model']}' is unavailable. Please verify your Groq API key at https://console.groq.com/keys."
+                            )
                 resp.raise_for_status()
                 data = resp.json()
 
             choice = data["choices"][0]["message"]
-            content = choice.get("content")
+            content = choice.get("content") or ""
+            if content:
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
             # Parse tool calls
             raw_tool_calls = choice.get("tool_calls", [])
@@ -409,6 +432,9 @@ class PlanPilotAgent:
                         function=ToolFunction(name=name, arguments=args),
                     )
                 )
+
+            if not tool_calls and content:
+                tool_calls = self._parse_text_tool_calls(content)
 
             # Track metrics if enabled
             usage = data.get("usage", {})
@@ -438,7 +464,9 @@ class PlanPilotAgent:
                 kwargs["tools"] = tools
 
             resp = ollama.chat(**kwargs)
-            content = resp.message.content
+            content = resp.message.content or ""
+            if content:
+                content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
 
             tool_calls = []
             if resp.message.tool_calls:
@@ -452,6 +480,9 @@ class PlanPilotAgent:
                     tool_calls.append(
                         ToolCall(function=ToolFunction(name=tc.function.name, arguments=args))
                     )
+
+            if not tool_calls and content:
+                tool_calls = self._parse_text_tool_calls(content)
 
             # Track metrics if enabled
             if isinstance(resp, dict):
@@ -468,6 +499,27 @@ class PlanPilotAgent:
                 self.last_metrics["llm_calls"] += 1
 
             return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
+
+    def _parse_text_tool_calls(self, content: str) -> list[ToolCall]:
+        """Extract tool calls written as text (e.g. get_weather(city="Jaipur")) from LLM text responses."""
+        valid_tools = ["get_weather", "search_books", "discover_events", "find_budget_hotels", "travel_route", "famous_restaurants"]
+        tool_calls: list[ToolCall] = []
+        for line in content.split("\n"):
+            line = line.strip()
+            for tname in valid_tools:
+                if f"{tname}(" in line:
+                    try:
+                        arg_part = line.split(f"{tname}(", 1)[1].rsplit(")", 1)[0]
+                        args: dict[str, Any] = {}
+                        matches = re.findall(r'(\w+)\s*=\s*(?:"([^"]*)"|\'([^\']*)\'|(\w+))', arg_part)
+                        for m in matches:
+                            k = m[0]
+                            val = m[1] or m[2] or m[3]
+                            args[k] = val
+                        tool_calls.append(ToolCall(function=ToolFunction(name=tname, arguments=args)))
+                    except Exception:
+                        pass
+        return tool_calls
 
     async def _run_sync(self, fn: Any, *args: Any, **kwargs: Any) -> Any:
         """Run a blocking function in a thread executor, cleanly re-raising any exception.
@@ -510,39 +562,40 @@ class PlanPilotAgent:
         if provider == "groq":
             system_content += (
                 "For requests about weather, travel routes, budget hotels, events, or famous restaurants, you MUST call the appropriate tool first. "
-                "For comprehensive travel plan requests (e.g. 'Plan a 3-day trip to Jaipur from Ahmedabad'), perform multi-step planning by calling: "
-                "1. travel_route, 2. get_weather, 3. find_budget_hotels, 4. discover_events, 5. famous_restaurants. "
+                "For comprehensive travel plan requests (e.g. 'Plan a trip to New York'), you MUST execute ALL 5 travel tools: "
+                "1. travel_route, 2. get_weather, 3. find_budget_hotels, 4. famous_restaurants, 5. discover_events. "
+                "Do NOT generate a final response until ALL 5 tools have been called. "
+                "If the user specifies a cuisine or food preference (e.g. 'Indian food'), pass query='Indian food' to famous_restaurants(city=city, query='Indian food'). "
             )
         else:
             # Local model (Ollama)
             system_content += (
-                "To call a tool, you MUST write the function call directly in your response in one of these formats:\n"
-                "- travel_route(source=\"Ahmedabad\", destination=\"Jaipur\")\n"
-                "- get_weather(city=\"Jaipur\")\n"
-                "- find_budget_hotels(city=\"Jaipur\", budget=\"low\")\n"
-                "- discover_events(city=\"Jaipur\")\n"
-                "- famous_restaurants(city=\"Jaipur\")\n"
+                "To call a tool, write the function call directly in your response in one of these formats:\n"
+                "- travel_route(source=\"Ahmedabad\", destination=\"New York\")\n"
+                "- get_weather(city=\"New York\")\n"
+                "- find_budget_hotels(city=\"New York\", budget=\"low\")\n"
+                "- discover_events(city=\"New York\")\n"
+                "- famous_restaurants(city=\"New York\", query=\"Indian food\")\n"
                 "- search_books(query=\"travel guide\")\n\n"
-                "Do not write introductory text, greetings, or placeholders when calling the tool. Write ONLY the tool call in your first turn and wait for the results. "
-                "For comprehensive travel plan requests (e.g. 'Plan a 3-day trip to Jaipur from Ahmedabad'), perform multi-step planning by calling tools sequentially. "
+                "Do not write introductory text or greetings when calling tools. Write ONLY tool calls until all 5 travel tools are executed. "
+                "If the user asks for specific food (e.g. 'Indian food'), pass query='Indian food' to famous_restaurants. "
             )
             
         system_content += (
-            "\n\nCRITICAL OUTPUT FORMATTING RULES:\n"
-            "1. TRAVEL PLAN FORMAT RULE: When a trip, itinerary, or travel plan is requested, your output MUST be structured using these exact headers:\n"
+            "\n\nCRITICAL OUTPUT FORMATTING & HALLUCINATION RULES:\n"
+            "1. MANDATORY TOOL EXECUTION RULE: For any travel plan request, call ALL 5 tools (Route, Weather, Hotels, Restaurants, Events). Do NOT invent or output fake hotel names or fake events if the tool was not called.\n"
+            "2. TRAVEL PLAN FORMAT RULE: When a travel plan is requested, your final output MUST be structured using these exact headers:\n"
             "   Destination:\n   <city>\n\n"
             "   Weather:\n   <summary with °C, km/h>\n\n"
             "   Travel Route:\n   <summary with distance, time, transport options>\n\n"
-            "   Budget Hotels:\n   <recommended stays with price range and rating>\n\n"
-            "   Events:\n   <local activities and events>\n\n"
-            "   Restaurants:\n   <famous spots and specialities>\n\n"
+            "   Budget Hotels:\n   <recommended stays with price range and rating from find_budget_hotels output>\n\n"
+            "   Events:\n   <local activities and events from discover_events output>\n\n"
+            "   Restaurants:\n   <famous spots and specialities from famous_restaurants output>\n\n"
             "   Suggested Itinerary:\n   Day 1: <morning, afternoon, evening activities>\n   Day 2: <activities>\n   Day 3: <activities>\n\n"
-            "   Trip Score:\n   <0-100 score and quality label>\n\n"
-            "   Reasoning:\n   <explain why these choices fit budget and preferences>\n\n"
+            "   Reasoning:\n   <explain why these choices fit budget and food preferences>\n\n"
             "   Tools Used:\n   ✓ Weather\n   ✓ Route\n   ✓ Hotels\n   ✓ Events\n   ✓ Restaurants\n\n"
-            "2. SINGLE QUERY RULE: For single-topic queries (e.g., only weather, only hotels, or only restaurants), answer directly using that specific tool without generating a multi-day travel itinerary.\n"
-            "3. EARTH-ONLY RULE: The tools ONLY work for real locations on Earth. For fictional or non-Earth locations, answer from general knowledge.\n"
-            "When user preferences are provided, use them to personalize all recommendations. If tools do not return data, state it clearly without inventing fake options."
+            "3. SINGLE QUERY RULE: For single-topic queries (e.g. only weather or only restaurants), answer directly using that specific tool.\n"
+            "4. EARTH-ONLY RULE: Tools ONLY work for real locations on Earth.\n"
         )
 
         if self.messages and self.messages[0].get("role") == "system":
@@ -735,6 +788,13 @@ class PlanPilotAgent:
                                 if status_callback:
                                     await status_callback(f"Using stored home city '{home_city}' as departure location...")
 
+                    # Cuisine Preference Auto-filling for famous_restaurants
+                    if tool_name == "famous_restaurants" and not tool_args.get("query"):
+                        for cuisine in ["indian", "italian", "chinese", "mexican", "thai", "japanese", "vegan", "vegetarian", "seafood", "street food"]:
+                            if cuisine in q_lower:
+                                tool_args["query"] = f"{cuisine.title()} food"
+                                break
+
                     # Deduplicate: skip if exact same call already made this turn
                     call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
                     if call_key in seen_tool_calls:
@@ -836,6 +896,7 @@ class PlanPilotAgent:
                 self._call_llm_with_retry, reflection_prompt
             )
             final_answer = ref_resp.message.content or last_answer
+            final_answer = re.sub(r"<think>.*?</think>", "", final_answer, flags=re.DOTALL).strip()
 
             # Update the last assistant response with the QA refined answer
             self.messages[-1]["content"] = final_answer

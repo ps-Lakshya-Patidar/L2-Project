@@ -1,30 +1,43 @@
-# 🧭 PlanPilot
+# 🧭 PlanPilot: Personal AI Travel & Concierge Agent
 
-PlanPilot is a stateful, fully local/cloud AI agent concierge powered by **Ollama** or **Groq Cloud**, the **Model Context Protocol (MCP)**, and free public APIs. It acts as your personal navigator to compile personalized weekend schedules, fetch real-time weather, recommend books, and discover live local events.
+PlanPilot is a stateful, fully local/cloud AI travel planning agent powered by **Ollama** or **Groq Cloud**, the **Model Context Protocol (MCP)**, OpenStreetMap Overpass API, and free public services. It acts as your personal concierge to compile personalized travel itineraries, fetch real-time weather, search spatial hotels & restaurants, compute real-world transport routes, recommend books, and discover live local events.
 
 ---
 
-## ✨ Features
+## ✨ Key Features & Capability Matrix
 
-- **🌤️ Smart Weather Forecasts**: Connects to the Open-Meteo API to retrieve current conditions and hourly precipitation probabilities (rain check) for the next 12 hours.
-- **📚 Reliable Book Recommendations**: Queries the Open Library API directly to find books by topic, title, or author. Includes direct links and has no scraping fallback to ensure data accuracy.
-- **🎟️ Live Event Discovery**: Uses SerpAPI (with DuckDuckGo search fallback) to locate live events, concerts, or exhibitions for any city.
-- **🧠 User Preference Engine**: Integrates a JSON profile memory (interests, dislikes, home city, budget) to personalize and rank all recommendations.
-- **📊 Evaluation & Cost Telemetry**: Displays token usage (input/output/total), step execution counts, latency, and real-time cost estimations based on model pricing grids in the Streamlit UI.
-- **🌐 Interactive Streamlit Portal**: A beautiful, dark-themed dashboard featuring system vital checks, model switching, profile editing, and live callback metrics.
-- **💻 Stateful CLI REPL**: An interactive CLI prompt that remembers previous turns for multi-turn planning.
+- **🏨 Spatial Hotel Discovery (`find_budget_hotels`)**: Queries OpenStreetMap (OSM) Overpass API (`node["tourism"~"hotel|hostel|guest_house"]`) for live stays. Supports dynamic budget tiers (`low`, `mid-range`, `premium`, `luxury`).
+- **🛣️ Real-World Route & Geocoding (`travel_route`)**: Validates real-world cities on Earth via Open-Meteo geocoding. Rejects fake/gibberish cities (`asdfgh`, `qwerty`). Computes Haversine Great Circle distances, travel times, transport modes (Train, Bus, Flight, Drive), and route summaries.
+- **🍽️ Spatial Restaurant Discovery (`famous_restaurants`)**: Uses OpenStreetMap Overpass API (`node["amenity"="restaurant"]["name"]`) to return authentic local restaurants, cuisines, street addresses, and popular highlights.
+- **🌤️ Smart Weather Forecasts (`get_weather`)**: Connects to the Open-Meteo API to retrieve current conditions and 12-hour precipitation forecasts.
+- **📚 Reliable Book Recommendations (`search_books`)**: Direct query to the Open Library API to find books by topic, title, or author with clickable links.
+- **🎟️ Live Event Discovery (`discover_events`)**: Locates concerts, exhibitions, or cultural activities for any city.
+- **🧠 JSON Profile Memory & Departure City Fallback**: Stores user preferences in `PlanPilot/data/user_preferences.json`. When a prompt omits the departure city (e.g., `"Plan a 3-day trip to Jaipur"`), it automatically retrieves `home_city` from JSON memory.
+- **📊 Evaluation Metrics & Telemetry Engine**: Tracks token usage (`tiktoken` / API metadata), millisecond latency (`time.monotonic()`), step counts, and real-time cost estimations based on model pricing grids in the Streamlit UI. Automated suite testing via **`pytest`**.
+- **🌐 Interactive Streamlit Portal**: Features dynamic Groq model dropdown selectors (`llama-3.3-70b-versatile`, `llama-3.1-8b-instant`, `mixtral-8x7b-32768`, `gemma2-9b-it`, `deepseek-r1-distill-llama-70b`, `Custom`), travel vibe goals, profile editing, and live trace logs.
+
+---
+
+## 📐 Evaluation Metrics & Telemetry Tools
+
+PlanPilot monitors and evaluates performance using the following tools and libraries:
+
+1. **Token Usage Metrics**: Extracted from LLM provider metadata (`prompt_tokens`, `completion_tokens`, `total_tokens`) or computed via **`tiktoken`**.
+2. **Step Count & Latency Telemetry**: Measured per tool call and per reasoning step using Python's native **`time.monotonic()`** module inside async status callbacks.
+3. **Real-time Cost Estimation Engine**: Calculated dynamically using model rate cards (`$0.05/1M` input tokens, `$0.08/1M` completion tokens) configured in `agent.py`.
+4. **Unit Testing & Code Quality Suite**: Automated unit tests built with **`pytest`** (`tests/test_preferences.py`).
 
 ---
 
 ## 🏗️ Architecture
 
-PlanPilot uses a client-server architecture based on the Model Context Protocol (MCP) using the `stdio` transport.
+PlanPilot uses a client-server architecture based on the Model Context Protocol (MCP) over `stdio` transport.
 
 ```
 User ──► CLI / Streamlit UI
               │
               ▼
-    Stateful Agent Loop (planpilot.agent)
+    Stateful Agent Loop (planpilot.agent) ◄──► data/user_preferences.json
               │
       ┌───────┴───────┐
       ▼               ▼
@@ -34,193 +47,149 @@ User ──► CLI / Streamlit UI
                 MCP Subprocess (planpilot.mcp_server)
                        │
                        ▼
-             Registered Tools (get_weather, search_books, discover_events, get_weekend_score)
+              Registered MCP Tools (6 Total):
+              - get_weather         - find_budget_hotels
+              - search_books        - travel_route
+              - discover_events     - famous_restaurants
                        │
                        ▼
-             External APIs (Open-Meteo, Open Library, SerpAPI/DuckDuckGo)
+              External APIs / Services:
+              (Open-Meteo, OpenStreetMap Overpass, Open Library, DuckDuckGo)
 ```
 
 ---
 
-## 🔌 API & Tool Schemas
+## 🔌 MCP Tool API Reference (6 Active Tools)
 
-PlanPilot exposes the following tool interfaces on the MCP Server:
+PlanPilot exposes 6 active tool interfaces on the MCP Server:
 
-### 1. `get_weather`
-Fetch current weather and 12-hour precipitation forecast for a specified city.
-*   **Input Schema**:
-    ```json
-    {
-      "city": "string (required, 2-100 characters)"
-    }
-    ```
-*   **Output Example**:
-    ```json
-    {
-      "city": "Indore",
-      "country": "India",
-      "temperature_c": 28.5,
-      "windspeed_kmh": 14.2,
-      "weather_code": 1,
-      "forecast_next_12h": {
-        "any_rain_expected": false,
-        "max_rain_probability_percent": 10,
-        "total_expected_rain_mm": 0.0
-      }
-    }
-    ```
+### 1. `find_budget_hotels`
+Search for budget, mid-range, or luxury hotels and accommodations.
+```json
+{
+  "city": "Jaipur",
+  "budget": "low | mid-range | premium | luxury"
+}
+```
 
-### 2. `search_books`
+### 2. `travel_route`
+Calculate real-world distance (Haversine), travel durations, and transport options between two cities. Rejects fake/gibberish city names.
+```json
+{
+  "source": "Ahmedabad",
+  "destination": "Jaipur"
+}
+```
+
+### 3. `famous_restaurants`
+Discover famous local dining spots, bistros, and regional specialities using OpenStreetMap Overpass API.
+```json
+{
+  "city": "Indore"
+}
+```
+
+### 4. `get_weather`
+Fetch current weather and 12-hour precipitation forecast for a city.
+```json
+{
+  "city": "Paris"
+}
+```
+
+### 5. `search_books`
 Search for book recommendations and metadata using the Open Library API.
-*   **Input Schema**:
-    ```json
-    {
-      "query": "string (required)"
-    }
-    ```
-*   **Output Example**:
-    ```json
-    [
-      {
-        "title": "Dune",
-        "author": "Frank Herbert",
-        "first_publish_year": 1965,
-        "number_of_pages_median": 412,
-        "info_url": "https://openlibrary.org/works/OL89341W"
-      }
-    ]
-    ```
+```json
+{
+  "query": "science fiction"
+}
+```
 
-### 3. `discover_events`
+### 6. `discover_events`
 Discover live events, exhibitions, concerts, or activities happening in a city.
-*   **Input Schema**:
-    ```json
-    {
-      "city": "string (required)",
-      "query": "string (optional, category filter)"
-    }
-    ```
-*   **Output Example**:
-    ```json
-    [
-      {
-        "source": "Music Fest 2026",
-        "summary": "Live Open Air Venue | Saturday 7 PM | Info/Tickets: https://..."
-      }
-    ]
-    ```
-
-### 4. `get_weekend_score`
-Compute an algorithmic quality score (0-100) based on weather, event counts, and preference matches.
-*   **Input Schema**:
-    ```json
-    {
-      "city": "string (required)"
-    }
-    ```
+```json
+{
+  "city": "Mumbai"
+}
+```
 
 ---
 
 ## ⚙️ How the Process Works (Under the Hood)
 
-```
-[User Prompt] ──► [HANDSHAKE] ──► [LLM Tool Analysis]
-                                        │
-             ┌──────────────────────────┴──────────────────────────┐
-             ▼ (Needs Data)                                        ▼ (No tools needed / done)
-      [Execute MCP Tool]                                    [Self-Reflection QA]
-             │                                                     │
-             ▼                                                     ▼
-    [API Return & Loop] ───────────────────────────────────► [Refined Response]
-```
-
-1.  **Handshake**: The client agent spawns the MCP server subprocess using stdio.
-2.  **Tool Scheme Retrieval**: The agent retrieves the tool definitions and parameters.
-3.  **Reasoning Loop**: The LLM determines if a tool call is needed. If yes, it outputs a tool call which is intercepted and executed by the client.
-4.  **Self-Reflection (QA) Pass**:
-    - To prevent hallucinations, the draft response and current turn's tool outputs are sent to a secondary LLM reviewer.
-    - The QA pass validates that the draft matches the tool data, formats book URLs as clickable markdown links, and outputs a clean, friendly response.
-5.  **Metrics Calculation**: Prompt inputs, completion tokens, latency, steps, and real-time cost estimations based on rate cards are compiled and rendered.
+1. **Handshake**: The agent client spawns the MCP server subprocess using stdio transport.
+2. **Preference & Departure City Auto-Resolution**: Reads `PlanPilot/data/user_preferences.json`. If a travel query specifies a destination but omits the source city, `home_city` is automatically passed as the departure location.
+3. **Reasoning Loop**: The LLM determines necessary tool calls, executes them via MCP client session, and truncates raw context (`[:1500]`) to protect against Groq 6,000 TPM rate limits.
+4. **Self-Reflection (QA) Pass**: Sends draft outputs to a reflection reviewer. Single-topic queries receive clean, direct answers; full itineraries are structured with complete markdown sections.
 
 ---
 
 ## 🚀 How to Run the Project
 
 ### 1. Installation
-Clone the repository, configure a virtual environment, and install:
 ```bash
-# Create virtual environment
+# Create and activate virtual environment
 python -m venv .venv
+.venv\Scripts\Activate.ps1   # On Windows
 
-# Activate virtual environment
-# Windows:
-.venv\Scripts\Activate.ps1
-# Mac/Linux:
-source .venv/bin/activate
-
-# Install requirements and package in editable mode
+# Install dependencies and editable package
 pip install -r requirements.txt
 pip install -e .
 ```
 
 ### 2. Configuration
-Copy the environment template and configure your provider:
-```bash
-cp .env.example .env
-```
-Ensure `.env` contains:
+Create a `.env` file:
 ```env
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=llama3.2:3b
-
-# Or if using Groq Cloud:
-# LLM_PROVIDER=groq
-# GROQ_API_KEY=your_key_here
-# GROQ_MODEL=llama-3.3-70b-versatile
+LLM_PROVIDER=groq
+GROQ_API_KEY=your_groq_api_key_here
+GROQ_MODEL=llama-3.3-70b-versatile
 ```
 
 ### 3. Execution Commands
 
-#### **A. Streamlit Web Portal (With Metrics & UI)**
+#### **Streamlit Web Portal**
 ```bash
 planpilot ui
+# Or: python -m streamlit run src/planpilot/ui/streamlit_app.py
 ```
 
-#### **B. Stateful Interactive Mode (CLI REPL)**
+#### **Stateful Interactive CLI REPL**
 ```bash
 planpilot query
 ```
 
-#### **C. Single-Query Command**
+#### **Single Query Command**
 ```bash
-planpilot query "Is there any rain expected in Indore in the next few hours?"
+planpilot query "Plan a 3-day trip to Jaipur"
+```
+
+#### **Unit Tests**
+```bash
+python -m pytest tests/test_preferences.py
 ```
 
 ---
 
-## 📝 Example Transcript
-
-**User prompt**: `Recommend some mystery books.`
+## 📁 File Structure Overview
 
 ```
-Connecting to tool server...
-Initializing protocol handshake...
-Retrieving registered tools...
-Reasoning (Step 1)...
-✦ Calling MCP Tool: search_books with args {'query': 'mystery'}...
-Received output from 'search_books'
-Reasoning (Step 2)...
-Performing self-reflection review...
+PlanPilot/
+├── data/
+│   └── user_preferences.json    # Persistent user JSON profile
+├── docs/
+│   ├── API_DOCUMENTATION.md      # Full API reference guide
+│   ├── PROJECT_PRESENTATION_GUIDE.md
+│   └── REVIEW_PREPARATION.md
+├── logs/
+│   └── planpilot.log             # Application execution logs
+├── src/
+│   └── planpilot/
+│       ├── agent/                # Agent loop & reflection QA pass
+│       ├── mcp_server/           # Stdio MCP Server tool registry
+│       ├── tools/                # Service implementations & APIs
+│       ├── ui/                   # Streamlit web portal
+│       └── utils/                # Config, Logger, Preferences
+├── tests/                        # Pytest suite
+├── README.md
+└── pyproject.toml
 ```
-
-**PlanPilot Response**:
-
-> ### 📚 Mystery Book Recommendations
->
-> 1. [The Mysterious Affair at Styles](https://openlibrary.org/works/OL471268W) by Agatha Christie (1920, 296 pages)
-> 2. [Still Life](https://openlibrary.org/works/OL17081952W) by Louise Penny (2005, 312 pages)
-> 3. [In the Woods](https://openlibrary.org/works/OL5735363W) by Tana French (2007, 429 pages)
-
----
-

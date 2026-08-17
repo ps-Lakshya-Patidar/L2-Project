@@ -21,7 +21,6 @@ ENV/
 .env
 *.log
 logs/
-docs/
 
 # Testing artifacts
 .coverage

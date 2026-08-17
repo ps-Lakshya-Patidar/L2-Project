@@ -139,17 +139,22 @@ async def travel_route(
 
 @mcp_server.tool(
     name="famous_restaurants",
-    description="Suggest famous local restaurants, iconic food spots, specialities, ratings, and locations in a city.",
+    description="Suggest famous local restaurants, iconic food spots, specialities, ratings, and locations in a city. "
+    "Use the optional 'query' parameter for specific cuisine preferences (e.g. 'Indian food', 'Italian bistros', 'vegan cafes', 'seafood').",
 )
 async def famous_restaurants(
     city: Annotated[
         str,
-        Field(description="Target city name, e.g. 'Jaipur', 'Udaipur', 'Indore', 'Mumbai'"),
+        Field(description="Target city name, e.g. 'New York', 'Jaipur', 'Paris', 'London'"),
     ],
+    query: Annotated[
+        str | None,
+        Field(description="Optional cuisine or food preference filter, e.g. 'Indian food', 'Italian', 'vegan'"),
+    ] = None,
 ) -> list[dict[str, Any]]:
-    """Suggest famous restaurants for a city."""
+    """Suggest famous restaurants for a city with optional cuisine query."""
     try:
-        res = await famous_restaurants_data(city)
+        res = await famous_restaurants_data(city, query)
         return res
     except Exception as e:
         return [{"error": str(e)}]

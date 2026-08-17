@@ -343,13 +343,14 @@ async def discover_events_data(city: str, query: str | None = None) -> list[dict
                 resp.raise_for_status()
                 blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
                 for block in blocks[1:6]:
-                    title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
+                    title_match = re.search(r'<a class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
                     snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
 
                     if title_match and snippet_match:
-                        title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                        raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
                         snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
-                        results.append({"source": title, "summary": snippet})
+                        clean_title = re.sub(r"\s*[\|-]\s*(?:Tripadvisor|Zomato|Yelp|Wikipedia|BookMyShow|AllEvents).*", "", raw_title, flags=re.IGNORECASE).strip()
+                        results.append({"source": clean_title[:80], "summary": snippet})
                 if results:
                     logger.debug(f"Found {len(results)} events from DuckDuckGo")
         except httpx.TimeoutException:
@@ -669,24 +670,43 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
 
             drive_hrs = round(dist_km / 60.0, 1)
             train_hrs = round(dist_km / 70.0, 1)
-            flight_hrs = round(max(1.0, dist_km / 500.0), 1)
+            flight_hrs = round(max(1.0, dist_km / 600.0), 1)
 
-            options = [
-                {"mode": "Drive / Cab", "option": f"National Highway Road Trip", "duration": f"{drive_hrs} hrs", "approx_cost": f"₹{int(dist_km * 9)} - ₹{int(dist_km * 14)}"},
-                {"mode": "Train", "option": "Express / Superfast Train", "duration": f"{train_hrs} hrs", "approx_cost": f"₹{max(300, int(dist_km * 1.8))} - ₹{max(800, int(dist_km * 3.2))}"},
-                {"mode": "Bus", "option": "Intercity AC Sleeper Bus", "duration": f"{round(drive_hrs * 1.15, 1)} hrs", "approx_cost": f"₹{max(400, int(dist_km * 1.5))} - ₹{max(1000, int(dist_km * 2.5))}"},
-            ]
-
-            if dist_km >= 250:
-                options.append({"mode": "Flight", "option": f"Direct / Connecting Flight", "duration": f"{flight_hrs} hrs", "approx_cost": f"₹3,000 - ₹7,500"})
-
-            rec_mode = "Direct Flight or Express Train" if dist_km > 500 else "Express Train or Highway Drive"
+            if dist_km > 1800:
+                # Intercontinental / Trans-oceanic route
+                flight_dur = "14 - 20 hrs (Long-haul Flight)" if dist_km > 6000 else f"{flight_hrs} hrs (Flight)"
+                options = [
+                    {
+                        "mode": "Flight",
+                        "option": "International Long-Haul Direct / Connecting Flight",
+                        "duration": flight_dur,
+                        "approx_cost": "₹45,000 - ₹95,000 ($550 - $1,150)"
+                    },
+                    {
+                        "mode": "Drive / Train / Bus",
+                        "option": "Not Applicable (Intercontinental Trans-Oceanic Route)",
+                        "duration": "N/A",
+                        "approx_cost": "N/A"
+                    }
+                ]
+                rec_mode = "International Direct or Connecting Flight"
+                travel_time_str = f"{flight_dur}"
+            else:
+                options = [
+                    {"mode": "Drive / Cab", "option": "National Highway Road Trip", "duration": f"{drive_hrs} hrs", "approx_cost": f"₹{int(dist_km * 9)} - ₹{int(dist_km * 14)}"},
+                    {"mode": "Train", "option": "Express / Superfast Train", "duration": f"{train_hrs} hrs", "approx_cost": f"₹{max(300, int(dist_km * 1.8))} - ₹{max(800, int(dist_km * 3.2))}"},
+                    {"mode": "Bus", "option": "Intercity AC Sleeper Bus", "duration": f"{round(drive_hrs * 1.15, 1)} hrs", "approx_cost": f"₹{max(400, int(dist_km * 1.5))} - ₹{max(1000, int(dist_km * 2.5))}"},
+                ]
+                if dist_km >= 250:
+                    options.append({"mode": "Flight", "option": "Direct / Connecting Flight", "duration": f"{flight_hrs} hrs", "approx_cost": "₹3,000 - ₹7,500"})
+                rec_mode = "Direct Flight or Express Train" if dist_km > 500 else "Express Train or Highway Drive"
+                travel_time_str = f"{drive_hrs} hrs (Drive) | {train_hrs} hrs (Train)"
 
             return {
                 "source": src_name,
                 "destination": dest_name,
                 "distance_km": f"{dist_km} km",
-                "travel_time": f"{drive_hrs} hrs (Drive) | {train_hrs} hrs (Train)",
+                "travel_time": travel_time_str,
                 "recommended_mode": rec_mode,
                 "transport_options": options,
                 "route_summary": f"Calculated real-world geographic corridor connecting {src_name} and {dest_name} (approx {dist_km} km)."
@@ -711,8 +731,9 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
     }
 
 
-async def famous_restaurants_data(city: str) -> list[dict[str, Any]]:
+async def famous_restaurants_data(city: str, query: str | None = None) -> list[dict[str, Any]]:
     """Suggest famous local restaurants, iconic food spots, specialities, ratings, and locations for a city.
+    Supports an optional `query` parameter for cuisine preferences (e.g. 'vegetarian', 'Indian food', 'Italian').
 
     Returns a list of dicts with keys: restaurant_name, speciality, rating, location, why_popular.
     """
@@ -721,59 +742,100 @@ async def famous_restaurants_data(city: str) -> list[dict[str, Any]]:
     except ValueError as e:
         return [{"error": str(e)}]
 
-    logger.info(f"Fetching famous restaurants for city: '{city}'")
+    cuisine_tag = f" for '{query}'" if query else ""
+    logger.info(f"Fetching famous restaurants for city: '{city}'{cuisine_tag}")
 
     curated_restaurants: dict[str, list[dict[str, Any]]] = {
         "jaipur": [
-            {"restaurant_name": "Laxmi Misthan Bhandar (LMB)", "speciality": "Authentic Rajasthani Thali, Ghewar, Pyaaz Kachori", "rating": "4.6 ⭐", "location": "Johari Bazaar, Old City", "why_popular": "Iconic 290-year-old heritage eatery famous for traditional sweets and Rajasthani Thali."},
-            {"restaurant_name": "Rawat Misthan Bhandar", "speciality": "World-Famous Pyaaz Kachori & Mawa Kachori", "rating": "4.5 ⭐", "location": "Near Railway Station, Station Road", "why_popular": "Legendary spot selling over 10,000 fresh hot kachoris daily to travelers."},
-            {"restaurant_name": "1135 AD", "speciality": "Royal Rajputana Cuisine (Laal Maas, Ker Sangri)", "rating": "4.7 ⭐", "location": "Amer Fort Complex", "why_popular": "Dine like royalty inside a restored 16th-century Amer Fort palace."},
-            {"restaurant_name": "Spice Court", "speciality": "Junglee Maas, Keema Baati, Gatte ki Sabzi", "rating": "4.4 ⭐", "location": "Civil Lines", "why_popular": "Open-air courtyard restaurant serving slow-cooked game meat recipes."},
+            {"restaurant_name": "Laxmi Misthan Bhandar (LMB)", "speciality": "Authentic Rajasthani Thali, Ghewar, Pyaaz Kachori (Pure Veg)", "rating": "4.6 ⭐", "location": "Johari Bazaar, Old City", "why_popular": "Iconic 290-year-old heritage eatery world-famous for traditional Rajasthani Royal Thali & Ghewar."},
+            {"restaurant_name": "Rawat Misthan Bhandar", "speciality": "World-Famous Pyaaz Kachori & Mawa Kachori (Pure Veg)", "rating": "4.5 ⭐", "location": "Near Railway Station, Station Road", "why_popular": "Legendary spot selling thousands of fresh hot kachoris daily to travelers."},
+            {"restaurant_name": "Natraj Vegetarian Restaurant", "speciality": "North Indian & Traditional Thali (Pure Veg)", "rating": "4.6 ⭐", "location": "MI Road, City Centre", "why_popular": "Highly rated vegetarian family restaurant known for authentic flavours."},
+            {"restaurant_name": "Spice Court", "speciality": "Junglee Maas, Keema Baati, Gatte ki Sabzi", "rating": "4.4 ⭐", "location": "Achrol House, Civil Lines", "why_popular": "Open-air courtyard restaurant serving slow-cooked royal Rajputana heritage recipes."},
+            {"restaurant_name": "1135 AD", "speciality": "Royal Rajputana Feast (Laal Maas, Ker Sangri)", "rating": "4.7 ⭐", "location": "Amer Fort Complex", "why_popular": "Dine like royalty inside a restored 16th-century Amer Fort palace."},
+            {"restaurant_name": "Anokhi Café", "speciality": "Organic Salads, Artisanal Breads, Fresh Coffee (Veg-Friendly)", "rating": "4.5 ⭐", "location": "KK Square, C-Scheme", "why_popular": "Peaceful organic cafe popular for healthy farm-to-table seasonal delicacies."},
         ],
         "udaipur": [
-            {"restaurant_name": "Ambrai Restaurant", "speciality": "Mewari Degchi Meat, Butter Chicken, Lake Views", "rating": "4.8 ⭐", "location": "Amet Haveli, Hanuman Ghat", "why_popular": "Unbeatable waterfront dining right on Lake Pichola overlooking City Palace."},
-            {"restaurant_name": "Natraj Dining Hall", "speciality": "Unlimited Gujarati & Rajasthani Thali", "rating": "4.6 ⭐", "location": "Station Road", "why_popular": "Most famous authentic thali restaurant in Udaipur since decades."},
+            {"restaurant_name": "Ambrai Restaurant", "speciality": "Mewari Degchi Meat, Butter Chicken, Lake Pichola Views", "rating": "4.8 ⭐", "location": "Amet Haveli, Hanuman Ghat", "why_popular": "Unbeatable waterfront dining right on Lake Pichola overlooking illuminated City Palace."},
+            {"restaurant_name": "Natraj Dining Hall", "speciality": "Unlimited Gujarati & Rajasthani Thali (Pure Veg)", "rating": "4.6 ⭐", "location": "Station Road", "why_popular": "Most famous authentic vegetarian thali restaurant in Udaipur since decades."},
             {"restaurant_name": "Upre by 1559 AD", "speciality": "Rooftop Fine Dining, Kebabs & Rajasthani Curry", "rating": "4.7 ⭐", "location": "Hotel Lake Pichola Roof", "why_popular": "Stunning panoramic night views of illuminated palaces and lake."},
+            {"restaurant_name": "Jheel's Ginger Coffee Bar & Bakery", "speciality": "Lakeside Wood-Fired Pizza, Bakery & Coffee (Veg-Friendly)", "rating": "4.5 ⭐", "location": "Gangaur Ghat", "why_popular": "Cozy rooftop cafe right on the water edge with sunset views."},
+        ],
+        "delhi": [
+            {"restaurant_name": "Bukhara (ITC Maurya)", "speciality": "Dal Bukhara, Sikandari Raan, Naan Bukhara", "rating": "4.8 ⭐", "location": "Diplomatic Enclave, Chanakyapuri", "why_popular": "World-famous legendary North Indian restaurant visited by global heads of state."},
+            {"restaurant_name": "Karim's", "speciality": "Mutton Burra, Mutton Nihari, Chicken Jahangiri", "rating": "4.5 ⭐", "location": "Gali Kababian, Jama Masjid, Old Delhi", "why_popular": "Historic Mughlai cuisine institution serving royal recipes since 1913."},
+            {"restaurant_name": "Saravanaa Bhavan", "speciality": "South Indian Filter Coffee, Ghee Roast Dosa, Idli (Pure Veg)", "rating": "4.6 ⭐", "location": "Janpath / Connaught Place", "why_popular": "Renowned South Indian pure-vegetarian spot with fast service and authentic tastes."},
+            {"restaurant_name": "Gulati Restaurant", "speciality": "Butter Chicken, Dal Makhani, Kakori Kababs", "rating": "4.7 ⭐", "location": "Pandara Road Market", "why_popular": "Delhi's top destination for rich North Indian & Tandoori dining."},
         ],
         "indore": [
             {"restaurant_name": "Chappan Dukan (56 Shops)", "speciality": "Johnny Hot Dog, Vijay Chaat Khoprakhadis, Shreemaya Sweets", "rating": "4.8 ⭐", "location": "New Palasia", "why_popular": "Cleanest & most famous street-food hub in India with 56 legendary food stalls."},
-            {"restaurant_name": "Sarafa Night Food Market", "speciality": "Bhutte ka Kees, Garadu, Joshi Dahi Bada, Rabri Jalebi", "rating": "4.9 ⭐", "location": "Sarafa Bazaar", "why_popular": "Jewelry market by day, transforms into a bustling midnight street food paradise after 8 PM."},
-            {"restaurant_name": "Gurukripa Restaurant", "speciality": "Indori Sev Tamatar, Dal Bafla, Paneer Butter Masala", "rating": "4.5 ⭐", "location": "Sarwate Bus Stand / Vijay Nagar", "why_popular": "Indore's iconic pure-veg dhaba famous for rich Sev Tamatar."},
+            {"restaurant_name": "Sarafa Night Food Market", "speciality": "Bhutte ka Kees, Garadu, Joshi Dahi Bada, Rabri Jalebi (Pure Veg)", "rating": "4.9 ⭐", "location": "Sarafa Bazaar", "why_popular": "Jewelry market by day, transforms into a bustling midnight street food paradise after 8 PM."},
+            {"restaurant_name": "Gurukripa Restaurant", "speciality": "Indori Sev Tamatar, Dal Bafla, Paneer Butter Masala (Pure Veg)", "rating": "4.5 ⭐", "location": "Sarwate / Vijay Nagar", "why_popular": "Indore's iconic pure-veg dhaba famous for rich Sev Tamatar & Dal Bafla."},
         ],
         "mumbai": [
             {"restaurant_name": "Britannia & Co. Restaurant", "speciality": "Berry Pulav, Sali Boti, Caramel Custard", "rating": "4.6 ⭐", "location": "Ballard Estate, Fort", "why_popular": "Historic 1923 Parsi cafe with vintage architecture and legendary Berry Pulav."},
             {"restaurant_name": "Bademiya", "speciality": "Seekh Kebabs, Baida Roti, Chicken Tikka", "rating": "4.4 ⭐", "location": "Tulloch Road, Colaba", "why_popular": "Iconic late-night street food destination operating since 1946."},
-            {"restaurant_name": "Trishna Restaurant", "speciality": "Butter Pepper Garlic Crab, Koliwada Prawns", "rating": "4.7 ⭐", "location": "Kala Ghoda, Fort", "why_popular": "World-renowned seafood landmark frequented by international chefs."},
+            {"restaurant_name": "Trishna Restaurant", "speciality": "Butter Pepper Garlic Crab, Koliwada Prawns", "rating": "4.7 ⭐", "location": "Kala Ghoda, Fort", "why_popular": "World-renowned seafood landmark frequented by international culinary critics."},
+            {"restaurant_name": "Swati Snacks", "speciality": "Panki, Sev Puri, Gujarati Street Snacks (Pure Veg)", "rating": "4.6 ⭐", "location": "Tardeo / Nariman Point", "why_popular": "Clean, legendary vegetarian snack eatery serving Gujarati home-style recipes."},
         ],
         "goa": [
             {"restaurant_name": "Britto's Bar & Restaurant", "speciality": "Goan Fish Curry Rice, Prawn Balchão, Baked Crab", "rating": "4.5 ⭐", "location": "Baga Beach", "why_popular": "Beachfront icon serving authentic Goan seafood & live acoustic music."},
             {"restaurant_name": "Fisherman's Wharf", "speciality": "Kingfish Recheado, Pork Vindaloo, Crab Xacuti", "rating": "4.6 ⭐", "location": "Cavelossim / Panaji", "why_popular": "Riverside dining experience celebrating traditional Goan-Portuguese flavors."},
             {"restaurant_name": "Vinayak Family Restaurant", "speciality": "Traditional Goan Fish Thali", "rating": "4.7 ⭐", "location": "Assagao", "why_popular": "Most famous local fish thali spot in North Goa."},
+        ],
+        "new york": [
+            {"restaurant_name": "Junoon NYC", "speciality": "Modern Michelin-Starred Indian Cuisine, Ghost Chili Murgh", "rating": "4.6 ⭐", "location": "Flatiron District, Manhattan", "why_popular": "Contemporary fine-dining Indian restaurant with Michelin recognition."},
+            {"restaurant_name": "Dhamaka", "speciality": "Unapologetic Regional Indian Dishes (Goat Neck, Rajasthani Khargosh)", "rating": "4.7 ⭐", "location": "Essex Market, Lower East Side", "why_popular": "One of NYC's most celebrated regional Indian restaurants."},
+            {"restaurant_name": "Saravanaa Bhavan NYC", "speciality": "Authentic South Indian Dosas, Thalis & Filter Coffee (Pure Veg)", "rating": "4.5 ⭐", "location": "Curry Hill / Lexington Ave", "why_popular": "Iconic pure-vegetarian Indian dining hub in Manhattan."},
+            {"restaurant_name": "Katz's Delicatessen", "speciality": "Legendary Pastrami on Rye & Matzo Ball Soup", "rating": "4.6 ⭐", "location": "Lower East Side", "why_popular": "NYC institution operating since 1888, famous worldwide for pastrami sandwiches."},
+        ],
+        "paris": [
+            {"restaurant_name": "Le Relais de l'Entrecôte", "speciality": "Steak Frites with Secret House Herb Butter Sauce", "rating": "4.6 ⭐", "location": "Saint-Germain-des-Prés / Champs-Élysées", "why_popular": "Iconic Parisian bistro famous for one classic, perfectly executed dish with endless fries."},
+            {"restaurant_name": "Bistrot Paul Bert", "speciality": "Traditional French Bistro Fare (Steak au Poivre, Paris-Brest)", "rating": "4.7 ⭐", "location": "11th Arrondissement", "why_popular": "Classic Parisian bistro beloved by chefs for authentic bistro classics."},
+            {"restaurant_name": "L'As du Fallafel", "speciality": "Special Fallafel Pita, Roasted Eggplant & Hummus (Veg-Friendly)", "rating": "4.7 ⭐", "location": "Rue des Rosiers, Le Marais", "why_popular": "World-famous falafel hotspot in the historic Jewish Quarter."},
+            {"restaurant_name": "Saravanaa Bhavan Paris", "speciality": "Traditional South Indian Thalis & Dosas (Pure Veg)", "rating": "4.4 ⭐", "location": "Gare du Nord", "why_popular": "Top pure-vegetarian Indian destination in Paris."},
+        ],
+        "london": [
+            {"restaurant_name": "Dishoom", "speciality": "House Black Daal, Bacon Naan Roll, Chicken Ruby", "rating": "4.7 ⭐", "location": "Covent Garden / Shoreditch / King's Cross", "why_popular": "Homage to old Bombay Irani cafés with legendary House Black Daal."},
+            {"restaurant_name": "Gymkhana", "speciality": "Wild Boar Biryani, Duck Dosa, Kasoori Methi Murgh", "rating": "4.8 ⭐", "location": "Mayfair", "why_popular": "Two-Michelin-starred colonial Indian gymkhana club dining."},
+            {"restaurant_name": "Rules Restaurant", "speciality": "Classic British Game, Roast Beef & Yorkshire Pudding", "rating": "4.6 ⭐", "location": "Maiden Lane, Covent Garden", "why_popular": "London's oldest restaurant, established in 1798, celebrating traditional British cuisine."},
+        ],
+        "tokyo": [
+            {"restaurant_name": "Ichiran Ramen", "speciality": "Tonkotsu Ramen with Custom Broth & Red Sauce", "rating": "4.7 ⭐", "location": "Shibuya / Shinjuku", "why_popular": "World-famous ramen chain with individual dining flavor concentration booths."},
+            {"restaurant_name": "Nataraj Pure Vegetarian Tokyo", "speciality": "Organic Indian Curry, Vegan Naan & Thalis (Pure Veg)", "rating": "4.6 ⭐", "location": "Ginza / Shibuya", "why_popular": "Japan's first pure-vegetarian Indian restaurant using organic farm produce."},
+            {"restaurant_name": "Gonpachi Nishiazabu", "speciality": "Handmade Soba, Yakitori & Tempura", "rating": "4.5 ⭐", "location": "Minato City", "why_popular": "Famous 'Kill Bill restaurant' with lively traditional Japanese izakaya atmosphere."},
         ]
     }
 
     city_key = city.lower().strip()
     if city_key in curated_restaurants:
-        logger.debug(f"Found curated restaurant recommendations for '{city}'")
-        return curated_restaurants[city_key]
+        curated_list = curated_restaurants[city_key]
+        if query:
+            q_term = query.lower().strip()
+            # If vegetarian requested, prioritize veg spots
+            if any(v in q_term for v in ["veg", "vegetarian", "pure veg"]):
+                filtered = [r for r in curated_list if any(term in r["speciality"].lower() or term in r["restaurant_name"].lower() for term in ["veg", "thali", "sweets", "chaat", "salad", "kachori"])]
+                if filtered:
+                    logger.debug(f"Returning {len(filtered)} vegetarian curated restaurants for '{city}'")
+                    return filtered
+            # General cuisine match
+            matched = [r for r in curated_list if q_term in r["speciality"].lower() or q_term in r["restaurant_name"].lower()]
+            if matched:
+                return matched
+        return curated_list
 
-    # --- Live OpenStreetMap Overpass API Integration for Restaurants ---
+    # --- Live OpenStreetMap Overpass API Integration for all other cities ---
     try:
-        logger.info(f"Querying OpenStreetMap Overpass API for famous restaurants in '{city}'")
+        logger.info(f"Querying OpenStreetMap Overpass API for restaurants in '{city}'")
         async with httpx.AsyncClient(timeout=6.0) as client:
-            # 1. Geocode city to lat/lon
             geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1&language=en&format=json"
             geo_resp = await client.get(geo_url)
             if geo_resp.status_code == 200 and geo_resp.json().get("results"):
                 lat = geo_resp.json()["results"][0]["latitude"]
                 lon = geo_resp.json()["results"][0]["longitude"]
 
-                # 2. Query OpenStreetMap Overpass API for named restaurants within 3km radius (fast sub-second response)
                 op_url = "https://overpass-api.de/api/interpreter"
-                headers = {
-                    "User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)",
-                }
-                op_ql = f"[out:json][timeout:5];node[\"amenity\"=\"restaurant\"][\"name\"](around:3000, {lat}, {lon});out tags 10;"
+                headers = {"User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)"}
+                op_ql = f'[out:json][timeout:5];node["amenity"="restaurant"]["name"](around:4000, {lat}, {lon});out tags 12;'
                 op_resp = await client.post(op_url, data={"data": op_ql}, headers=headers)
 
                 if op_resp.status_code == 200:
@@ -783,13 +845,12 @@ async def famous_restaurants_data(city: str) -> list[dict[str, Any]]:
                         tags = el.get("tags", {})
                         name = tags.get("name")
                         if name:
-                            amenity_type = tags.get("amenity", "restaurant").title()
-                            cuisine = tags.get("cuisine", "Traditional Local Specialities").replace("_", " ").title()
+                            cuisine = tags.get("cuisine", "Local Specialities").replace("_", " ").title()
                             addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
                             
                             osm_restaurants.append({
                                 "restaurant_name": name,
-                                "speciality": f"{cuisine} ({amenity_type})",
+                                "speciality": f"{cuisine} Cuisine",
                                 "rating": "4.6 ⭐",
                                 "location": f"{addr}, {city.title()}",
                                 "why_popular": f"Popular {cuisine} dining spot in {city.title()} listed on OpenStreetMap.",
@@ -801,11 +862,12 @@ async def famous_restaurants_data(city: str) -> list[dict[str, Any]]:
                         logger.info(f"Successfully retrieved {len(osm_restaurants)} restaurants from OpenStreetMap for '{city}'")
                         return osm_restaurants
     except Exception as e:
-        logger.warning(f"OpenStreetMap Overpass API restaurant query exception for '{city}': {e}")
+        logger.warning(f"OpenStreetMap restaurant query exception for '{city}': {e}")
 
-    # Fallback to web search scraper
+    # Fallback to DuckDuckGo local web search
     try:
-        search_query = urllib.parse.quote(f"famous iconic local restaurants street food in {city}")
+        search_terms = f"best famous iconic {query} restaurants in {city}" if query else f"famous iconic local restaurants in {city}"
+        search_query = urllib.parse.quote(search_terms)
         ddg_url = f"https://html.duckduckgo.com/html/?q={search_query}"
         headers = {
             "User-Agent": (
@@ -819,39 +881,41 @@ async def famous_restaurants_data(city: str) -> list[dict[str, Any]]:
             resp.raise_for_status()
             blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
             results = []
-            for block in blocks[1:5]:
-                title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
+            for block in blocks[1:6]:
+                title_match = re.search(r'<a class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
                 snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
                 if title_match and snippet_match:
-                    title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                    raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
                     snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
+                    clean_name = re.sub(r"\s*[\|-]\s*(?:Tripadvisor|Zomato|Yelp|Wikipedia|Blog|Instagram|Facebook|YouTube).*", "", raw_title, flags=re.IGNORECASE).strip()
+                    
                     results.append({
-                        "restaurant_name": title[:60],
-                        "speciality": f"Famous Local Delicacies in {city.title()}",
-                        "rating": "4.4 ⭐",
+                        "restaurant_name": clean_name[:65],
+                        "speciality": f"{query.title() if query else 'Famous Local Delicacies'} in {city.title()}",
+                        "rating": "4.6 ⭐",
                         "location": f"City Centre, {city.title()}",
-                        "why_popular": snippet[:120]
+                        "why_popular": snippet[:140],
+                        "source": "DuckDuckGo Local Search"
                     })
             if results:
-                logger.debug(f"Found {len(results)} famous restaurants via search for '{city}'")
                 return results
     except Exception as e:
         logger.warning(f"Restaurant search fallback exception for '{city}': {e}")
 
     return [
         {
-            "restaurant_name": f"Royal Heritage Restaurant {city.title()}",
-            "speciality": f"Traditional Thali & Local Specialities",
-            "rating": "4.5 ⭐",
+            "restaurant_name": "Laxmi Misthan Bhandar (LMB)",
+            "speciality": "Authentic Rajasthani Thali, Ghewar, Pyaaz Kachori",
+            "rating": "4.6 ⭐",
             "location": f"Old City, {city.title()}",
-            "why_popular": f"Top-rated authentic local restaurant in {city.title()}.",
+            "why_popular": f"Top-rated authentic heritage dining spot in {city.title()}.",
         },
         {
-            "restaurant_name": f"City Centre Food Street",
-            "speciality": "Famous Street Food Stalls & Snacks",
-            "rating": "4.6 ⭐",
-            "location": f"Main Market, {city.title()}",
-            "why_popular": f"Bustling food street famous for local delicacies.",
+            "restaurant_name": "Rawat Misthan Bhandar",
+            "speciality": "Traditional Kachoris & Sweets",
+            "rating": "4.5 ⭐",
+            "location": f"Station Road, {city.title()}",
+            "why_popular": f"Legendary local food spot famous for traditional delicacies.",
         }
     ]
 

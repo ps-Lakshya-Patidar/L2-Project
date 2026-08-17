@@ -3,13 +3,28 @@
 Calls external free APIs: Open-Meteo, Open Library, and DuckDuckGo search.
 """
 
-from __future__ import annotations
 import html
+import math
 import re
 import urllib.parse
 from typing import Any
 import httpx
 from planpilot.utils.logger import logger
+
+
+def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Calculate Great Circle distance in kilometers between two GPS points."""
+    R = 6371.0
+    dlat = math.radians(lat2 - lat1)
+    dlon = math.radians(lon2 - lon1)
+    a = (
+        math.sin(dlat / 2.0) ** 2
+        + math.cos(math.radians(lat1))
+        * math.cos(math.radians(lat2))
+        * math.sin(dlon / 2.0) ** 2
+    )
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    return R * c
 
 # Map of common regions/states to their capital or major city for weather lookup
 REGION_FALLBACKS = {
@@ -613,7 +628,73 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
         res["destination"] = destination.title()
         return res
 
-    # General dynamic route estimation heuristic for unlisted cities
+    # Real-world Geocoding & Distance Calculation for any city pair
+    try:
+        async with httpx.AsyncClient(timeout=6.0) as client:
+            q1 = f"{source}, India" if "india" not in source.lower() and len(source) < 15 else source
+            q2 = f"{destination}, India" if "india" not in destination.lower() and len(destination) < 15 else destination
+
+            url1 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(q1)}&count=3&language=en&format=json"
+            url2 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(q2)}&count=3&language=en&format=json"
+            r1, r2 = await client.get(url1), await client.get(url2)
+            
+            res1 = r1.json().get("results") if r1.status_code == 200 else None
+            res2 = r2.json().get("results") if r2.status_code == 200 else None
+
+            # Fallback to raw query if region-qualified search returned no hits
+            if not res1:
+                u1 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(source)}&count=1&language=en&format=json"
+                r1 = await client.get(u1)
+                res1 = r1.json().get("results") if r1.status_code == 200 else None
+
+            if not res2:
+                u2 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(destination)}&count=1&language=en&format=json"
+                r2 = await client.get(u2)
+                res2 = r2.json().get("results") if r2.status_code == 200 else None
+
+            if not res1:
+                return {"error": f"Source city '{source}' not found on Earth. Please check city spelling."}
+            if not res2:
+                return {"error": f"Destination city '{destination}' not found on Earth. Please check city spelling."}
+
+            c1, c2 = res1[0], res2[0]
+            lat1, lon1 = c1["latitude"], c1["longitude"]
+            lat2, lon2 = c2["latitude"], c2["longitude"]
+            src_name = f"{c1.get('name', source)}, {c1.get('admin1', '')} {c1.get('country', '')}".strip(", ")
+            dest_name = f"{c2.get('name', destination)}, {c2.get('admin1', '')} {c2.get('country', '')}".strip(", ")
+
+            # Calculate driving distance (approx 1.25x haversine distance)
+            direct_dist = haversine_distance(lat1, lon1, lat2, lon2)
+            dist_km = max(30, int(direct_dist * 1.25))
+
+            drive_hrs = round(dist_km / 60.0, 1)
+            train_hrs = round(dist_km / 70.0, 1)
+            flight_hrs = round(max(1.0, dist_km / 500.0), 1)
+
+            options = [
+                {"mode": "Drive / Cab", "option": f"National Highway Road Trip", "duration": f"{drive_hrs} hrs", "approx_cost": f"₹{int(dist_km * 9)} - ₹{int(dist_km * 14)}"},
+                {"mode": "Train", "option": "Express / Superfast Train", "duration": f"{train_hrs} hrs", "approx_cost": f"₹{max(300, int(dist_km * 1.8))} - ₹{max(800, int(dist_km * 3.2))}"},
+                {"mode": "Bus", "option": "Intercity AC Sleeper Bus", "duration": f"{round(drive_hrs * 1.15, 1)} hrs", "approx_cost": f"₹{max(400, int(dist_km * 1.5))} - ₹{max(1000, int(dist_km * 2.5))}"},
+            ]
+
+            if dist_km >= 250:
+                options.append({"mode": "Flight", "option": f"Direct / Connecting Flight", "duration": f"{flight_hrs} hrs", "approx_cost": f"₹3,000 - ₹7,500"})
+
+            rec_mode = "Direct Flight or Express Train" if dist_km > 500 else "Express Train or Highway Drive"
+
+            return {
+                "source": src_name,
+                "destination": dest_name,
+                "distance_km": f"{dist_km} km",
+                "travel_time": f"{drive_hrs} hrs (Drive) | {train_hrs} hrs (Train)",
+                "recommended_mode": rec_mode,
+                "transport_options": options,
+                "route_summary": f"Calculated real-world geographic corridor connecting {src_name} and {dest_name} (approx {dist_km} km)."
+            }
+    except Exception as e:
+        logger.warning(f"Geocoding route calculation exception for '{source}' -> '{destination}': {e}")
+
+    # Fallback default
     return {
         "source": source.title(),
         "destination": destination.title(),

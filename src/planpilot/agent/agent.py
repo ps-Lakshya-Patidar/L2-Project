@@ -19,7 +19,11 @@ from mcp.client.stdio import stdio_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 
 from planpilot.utils.config import get_settings
-from planpilot.utils.preferences import load_preferences, build_preference_context
+from planpilot.utils.preferences import (
+    load_preferences,
+    build_preference_context,
+    auto_update_preferences_from_text,
+)
 
 
 class ToolFunction:
@@ -586,6 +590,9 @@ class PlanPilotAgent:
         is_route_only = has_route and not (has_weather or has_events or has_books or has_hotels or has_restaurants or has_travel_plan)
         is_restaurants_only = has_restaurants and not (has_weather or has_events or has_books or has_hotels or has_route or has_travel_plan)
 
+        # Auto-extract preference declarations (e.g., 'I live in Indore', 'Vegetarian') from query prompt
+        auto_update_preferences_from_text(user_query)
+
         # Inject user preferences as contextual system message for this turn
         prefs = load_preferences()
         pref_context = build_preference_context(prefs)
@@ -596,8 +603,9 @@ class PlanPilotAgent:
                 "role": "system",
                 "content": (
                     f"{pref_context}\n\n"
-                    "INSTRUCTION: Focus primarily on fulfilling the user's request. "
-                    "Only call tools that are directly relevant to the user's query. Do not execute unrelated searches."
+                    "INSTRUCTION: Fulfill the user's request using their stored JSON profile entities. "
+                    "DEPARTURE CITY RULE: If the user did NOT specify a starting/departure city in their prompt, use 'home_city' from their profile as the source for travel_route and travel planning. "
+                    "Only call tools directly relevant to the query."
                 )
             })
 
@@ -716,6 +724,16 @@ class PlanPilotAgent:
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments
+
+                    # Departure City Fallback for travel_route: if source is omitted or empty, use home_city from user_preferences.json
+                    if tool_name == "travel_route":
+                        src_arg = str(tool_args.get("source", "")).strip()
+                        if not src_arg or src_arg.lower() in ("none", "null", "unknown", "city", "my city", "home"):
+                            home_city = prefs.get("home_city")
+                            if home_city:
+                                tool_args["source"] = home_city
+                                if status_callback:
+                                    await status_callback(f"Using stored home city '{home_city}' as departure location...")
 
                     # Deduplicate: skip if exact same call already made this turn
                     call_key = (tool_name, json.dumps(tool_args, sort_keys=True))

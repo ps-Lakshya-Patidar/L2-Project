@@ -1101,7 +1101,7 @@ class PlanPilotAgent:
                     self.last_metrics["reflection_output_tokens"] = self.last_metrics["output_tokens"] - pre_ref_out
 
             # --- POST-GENERATION QUALITY GATE ---
-            if has_travel_plan or reqs.destination != "Destination":
+            if has_travel_plan and not is_single_tool_query:
                 final_answer = validate_and_enforce_sections(final_answer, reqs, tool_context)
 
             # Update the last assistant response with the QA refined answer

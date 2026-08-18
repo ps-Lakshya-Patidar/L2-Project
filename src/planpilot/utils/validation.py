@@ -156,8 +156,8 @@ def extract_requirements(query: str, user_prefs: dict[str, Any] | None = None) -
     has_books = any(w in q_lower for w in ["book", "reading", "novel", "literature"]) or True
 
     return UserRequirements(
-        origin=origin or "Ahmedabad",
-        destination=destination or "Paris",
+        origin=origin,
+        destination=destination,
         travel_dates=travel_dates,
         budget_level=budget_level,
         cuisine=cuisine,

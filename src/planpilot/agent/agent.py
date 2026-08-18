@@ -41,10 +41,15 @@ from planpilot.utils.validation import (
 _SYSTEM_PROMPT = (
     "You are PlanPilot, an AI Travel Concierge. Use MCP tools to answer travel queries.\n"
     "Tools: travel_route, get_weather, find_budget_hotels, famous_restaurants, discover_events, search_books.\n\n"
-    "TRAVEL PLAN STRUCTURE — use these exact # headers in order:\n"
-    "# Destination Overview | # Weather | # How to Reach | # Estimated Budget | "
-    "# Accommodation Options | # Restaurants | # Upcoming Events | # History of Destination | "
-    "# Recommended Books | # Suggested Itinerary | # Travel Tips\n\n"
+    "CRITICAL FORMATTING INSTRUCTIONS:\n"
+    "1. SINGLE-TOPIC QUERIES (e.g. only events, only weather, only hotels, only books, only restaurants, only routes):\n"
+    "   Answer ONLY the requested topic directly using the tool output. Do NOT output the 11 travel plan headers, "
+    "do NOT output Destination Overview, Weather, How to Reach, Estimated Budget, Hotels, Restaurants, History, Books, Itinerary, or Travel Tips unless explicitly asked for a full travel plan.\n\n"
+    "2. FULL TRAVEL PLAN QUERIES (e.g. 'Plan a trip to Paris', 'Full itinerary for Tokyo'):\n"
+    "   Use these exact # headers in order:\n"
+    "   # Destination Overview | # Weather | # How to Reach | # Estimated Budget | "
+    "   # Accommodation Options | # Restaurants | # Upcoming Events | # History of Destination | "
+    "   # Recommended Books | # Suggested Itinerary | # Travel Tips\n\n"
     "RULES:\n"
     "- Cross-border/>2000km: flights only, no drive/train.\n"
     "- Match cuisine exactly (Indian→Indian only, Vegetarian→veg only).\n"
@@ -817,7 +822,7 @@ class PlanPilotAgent:
         # Detect domain keywords in user query
         q_lower = user_query.lower()
         has_weather = any(kw in q_lower for kw in ["weather", "temperature", "forecast", "rain", "sunny", "climate"])
-        has_events = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show", "activities", "music"])
+        has_events = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show", "activities", "music", "comedy", "standup", "stand-up", "gig", "play", "theatre", "theater"])
         has_books = any(kw in q_lower for kw in ["book", "novel", "author", "reading", "read"])
         has_hotels = any(kw in q_lower for kw in ["hotel", "stay", "resort", "hostel", "accommodation", "lodging"])
         has_route = any(kw in q_lower for kw in ["route", "travel from", "how to reach", "transport", "distance", "how to travel"])

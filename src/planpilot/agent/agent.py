@@ -817,7 +817,7 @@ class PlanPilotAgent:
         # Detect domain keywords in user query
         q_lower = user_query.lower()
         has_weather = any(kw in q_lower for kw in ["weather", "temperature", "forecast", "rain", "sunny", "climate"])
-        has_events = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show", "activities"])
+        has_events = any(kw in q_lower for kw in ["event", "concert", "exhibition", "festival", "show", "activities", "music"])
         has_books = any(kw in q_lower for kw in ["book", "novel", "author", "reading", "read"])
         has_hotels = any(kw in q_lower for kw in ["hotel", "stay", "resort", "hostel", "accommodation", "lodging"])
         has_route = any(kw in q_lower for kw in ["route", "travel from", "how to reach", "transport", "distance", "how to travel"])
@@ -834,15 +834,19 @@ class PlanPilotAgent:
 
         is_general_query = not (has_weather or has_events or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
 
-        # Single-domain query flags
-        is_weather_only = has_weather and not (has_events or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
-        is_events_only = has_events and not (has_weather or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
-        is_books_only = has_books and not (has_weather or has_events or has_hotels or has_route or has_restaurants or has_travel_plan)
-        is_hotels_only = has_hotels and not (has_weather or has_events or has_books or has_route or has_restaurants or has_travel_plan)
-        is_route_only = has_route and not (has_weather or has_events or has_books or has_hotels or has_restaurants or has_travel_plan)
-        is_restaurants_only = has_restaurants and not (has_weather or has_events or has_books or has_hotels or has_route or has_travel_plan)
+        # Explicitly check if query is asking for a full travel itinerary
+        is_explicit_travel_plan = any(kw in q_lower for kw in ["trip", "travel", "tour", "itinerary", "vacation", "holiday", "plan a trip", "plan my trip", "day trip"])
+
+        # Single-domain query flags (only single domain matched and NOT explicitly asking for full travel plan)
+        is_weather_only = has_weather and not is_explicit_travel_plan and not (has_events or has_books or has_hotels or has_route or has_restaurants)
+        is_events_only = has_events and not is_explicit_travel_plan and not (has_weather or has_books or has_hotels or has_route or has_restaurants)
+        is_books_only = has_books and not is_explicit_travel_plan and not (has_weather or has_events or has_hotels or has_route or has_restaurants)
+        is_hotels_only = has_hotels and not is_explicit_travel_plan and not (has_weather or has_events or has_books or has_route or has_restaurants)
+        is_route_only = has_route and not is_explicit_travel_plan and not (has_weather or has_events or has_books or has_hotels or has_restaurants)
+        is_restaurants_only = has_restaurants and not is_explicit_travel_plan and not (has_weather or has_events or has_books or has_hotels or has_route)
         # Flag: single tool query → skip reflection pass
         is_single_tool_query = is_weather_only or is_events_only or is_books_only or is_restaurants_only or is_hotels_only or is_route_only
+        has_travel_plan = is_explicit_travel_plan or (not is_single_tool_query and not is_general_query)
 
         # Auto-extract preference declarations (e.g., 'I live in Indore', 'Vegetarian') from query prompt
         auto_update_preferences_from_text(user_query)

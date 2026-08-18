@@ -96,6 +96,20 @@ class Settings(BaseSettings):
         description="Groq model to use.",
     )
 
+    # --- OpenRouter ---
+    openrouter_api_key: str | None = Field(
+        default=None,
+        description="API key for OpenRouter.",
+    )
+    openrouter_model: str = Field(
+        default="openrouter/free",
+        description="OpenRouter model to use (e.g. openrouter/free, openai/gpt-oss-20b:free).",
+    )
+    openrouter_base_url: str = Field(
+        default="https://openrouter.ai/api/v1",
+        description="Base URL for OpenRouter API.",
+    )
+
     # --- SerpAPI ---
     serpapi_api_key: str | None = Field(
         default=None,

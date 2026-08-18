@@ -10,6 +10,7 @@ import urllib.parse
 from typing import Any
 import httpx
 from planpilot.utils.logger import logger
+from planpilot.utils.validation import validate_transportation, validate_hotel_entry, validate_restaurant_match
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -420,7 +421,7 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
     city_key = city.lower().strip()
     if city_key in curated_hotels:
         logger.debug(f"Found curated hotel recommendations for '{city}'")
-        return curated_hotels[city_key]
+        return [validate_hotel_entry(h) for h in curated_hotels[city_key]]
 
     # --- Live OpenStreetMap Overpass API Integration ---
     try:
@@ -462,14 +463,15 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                                 price_range = "₹800 - ₹1,800/night" if "hostel" in tourism_type.lower() else "₹1,500 - ₹3,500/night"
                                 rating_str = f"{stars} ⭐" if stars else "4.3 ⭐"
 
-                            osm_results.append({
+                            raw_h = {
                                 "hotel_name": name,
                                 "price_range": price_range,
                                 "rating": rating_str,
                                 "location": f"{addr} ({tourism_type})",
                                 "budget_tier": budget_tier,
                                 "source": "OpenStreetMap Overpass API"
-                            })
+                            }
+                            osm_results.append(validate_hotel_entry(raw_h))
                             if len(osm_results) >= 5:
                                 break
                     if osm_results:
@@ -513,20 +515,21 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                 if title_match and snippet_match:
                     title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
                     snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
-                    results.append({
+                    raw_h = {
                         "hotel_name": title[:60],
                         "price_range": fallback_price,
                         "rating": fallback_rating,
                         "location": snippet[:100],
                         "budget_tier": budget_tier
-                    })
+                    }
+                    results.append(validate_hotel_entry(raw_h))
             if results:
                 logger.debug(f"Found {len(results)} hotel recommendations via search for '{city}'")
                 return results
     except Exception as e:
         logger.warning(f"Hotel search fallback exception for '{city}': {e}")
 
-    return [
+    default_hotels = [
         {
             "hotel_name": f"Budget Stay Central {city.title()}",
             "price_range": "₹800 - ₹1,500/night",
@@ -542,6 +545,7 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
             "budget_tier": budget_tier,
         }
     ]
+    return [validate_hotel_entry(h) for h in default_hotels]
 
 
 async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
@@ -632,26 +636,12 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
     # Real-world Geocoding & Distance Calculation for any city pair
     try:
         async with httpx.AsyncClient(timeout=6.0) as client:
-            q1 = f"{source}, India" if "india" not in source.lower() and len(source) < 15 else source
-            q2 = f"{destination}, India" if "india" not in destination.lower() and len(destination) < 15 else destination
-
-            url1 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(q1)}&count=3&language=en&format=json"
-            url2 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(q2)}&count=3&language=en&format=json"
+            url1 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(source)}&count=3&language=en&format=json"
+            url2 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(destination)}&count=3&language=en&format=json"
             r1, r2 = await client.get(url1), await client.get(url2)
             
             res1 = r1.json().get("results") if r1.status_code == 200 else None
             res2 = r2.json().get("results") if r2.status_code == 200 else None
-
-            # Fallback to raw query if region-qualified search returned no hits
-            if not res1:
-                u1 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(source)}&count=1&language=en&format=json"
-                r1 = await client.get(u1)
-                res1 = r1.json().get("results") if r1.status_code == 200 else None
-
-            if not res2:
-                u2 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(destination)}&count=1&language=en&format=json"
-                r2 = await client.get(u2)
-                res2 = r2.json().get("results") if r2.status_code == 200 else None
 
             if not res1:
                 return {"error": f"Source city '{source}' not found on Earth. Please check city spelling."}
@@ -661,55 +651,45 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
             c1, c2 = res1[0], res2[0]
             lat1, lon1 = c1["latitude"], c1["longitude"]
             lat2, lon2 = c2["latitude"], c2["longitude"]
-            src_name = f"{c1.get('name', source)}, {c1.get('admin1', '')} {c1.get('country', '')}".strip(", ")
-            dest_name = f"{c2.get('name', destination)}, {c2.get('admin1', '')} {c2.get('country', '')}".strip(", ")
+            country1 = c1.get("country", "")
+            country2 = c2.get("country", "")
+            src_name = f"{c1.get('name', source)}, {c1.get('admin1', '')} {country1}".strip(", ")
+            dest_name = f"{c2.get('name', destination)}, {c2.get('admin1', '')} {country2}".strip(", ")
 
             # Calculate driving distance (approx 1.25x haversine distance)
             direct_dist = haversine_distance(lat1, lon1, lat2, lon2)
             dist_km = max(30, int(direct_dist * 1.25))
+            is_diff_country = bool(country1 and country2 and country1.lower().strip() != country2.lower().strip())
 
             drive_hrs = round(dist_km / 60.0, 1)
             train_hrs = round(dist_km / 70.0, 1)
             flight_hrs = round(max(1.0, dist_km / 600.0), 1)
 
-            if dist_km > 1800:
-                # Intercontinental / Trans-oceanic route
-                flight_dur = "14 - 20 hrs (Long-haul Flight)" if dist_km > 6000 else f"{flight_hrs} hrs (Flight)"
-                options = [
-                    {
-                        "mode": "Flight",
-                        "option": "International Long-Haul Direct / Connecting Flight",
-                        "duration": flight_dur,
-                        "approx_cost": "₹45,000 - ₹95,000 ($550 - $1,150)"
-                    },
-                    {
-                        "mode": "Drive / Train / Bus",
-                        "option": "Not Applicable (Intercontinental Trans-Oceanic Route)",
-                        "duration": "N/A",
-                        "approx_cost": "N/A"
-                    }
-                ]
-                rec_mode = "International Direct or Connecting Flight"
-                travel_time_str = f"{flight_dur}"
-            else:
-                options = [
-                    {"mode": "Drive / Cab", "option": "National Highway Road Trip", "duration": f"{drive_hrs} hrs", "approx_cost": f"₹{int(dist_km * 9)} - ₹{int(dist_km * 14)}"},
-                    {"mode": "Train", "option": "Express / Superfast Train", "duration": f"{train_hrs} hrs", "approx_cost": f"₹{max(300, int(dist_km * 1.8))} - ₹{max(800, int(dist_km * 3.2))}"},
-                    {"mode": "Bus", "option": "Intercity AC Sleeper Bus", "duration": f"{round(drive_hrs * 1.15, 1)} hrs", "approx_cost": f"₹{max(400, int(dist_km * 1.5))} - ₹{max(1000, int(dist_km * 2.5))}"},
-                ]
-                if dist_km >= 250:
-                    options.append({"mode": "Flight", "option": "Direct / Connecting Flight", "duration": f"{flight_hrs} hrs", "approx_cost": "₹3,000 - ₹7,500"})
-                rec_mode = "Direct Flight or Express Train" if dist_km > 500 else "Express Train or Highway Drive"
-                travel_time_str = f"{drive_hrs} hrs (Drive) | {train_hrs} hrs (Train)"
+            base_options = [
+                {"mode": "Drive", "option": "National Highway Road Trip", "duration": f"{drive_hrs} hrs", "approx_cost": f"₹{int(dist_km * 9)} - ₹{int(dist_km * 14)}"},
+                {"mode": "Train", "option": "Express / Superfast Train", "duration": f"{train_hrs} hrs", "approx_cost": f"₹{max(300, int(dist_km * 1.8))} - ₹{max(800, int(dist_km * 3.2))}"},
+                {"mode": "Bus", "option": "Intercity AC Sleeper Bus", "duration": f"{round(drive_hrs * 1.15, 1)} hrs", "approx_cost": f"₹{max(400, int(dist_km * 1.5))} - ₹{max(1000, int(dist_km * 2.5))}"},
+            ]
+            if dist_km >= 250:
+                base_options.append({"mode": "Flight", "option": "Direct / Connecting Commercial Flight", "duration": f"{flight_hrs} hrs", "approx_cost": "₹3,500 - ₹8,500"})
+
+            # Enforce validation pipeline
+            val_res = validate_transportation(
+                origin=src_name,
+                destination=dest_name,
+                distance_km=dist_km,
+                is_different_country=is_diff_country,
+                transport_options=base_options,
+            )
 
             return {
                 "source": src_name,
                 "destination": dest_name,
                 "distance_km": f"{dist_km} km",
-                "travel_time": travel_time_str,
-                "recommended_mode": rec_mode,
-                "transport_options": options,
-                "route_summary": f"Calculated real-world geographic corridor connecting {src_name} and {dest_name} (approx {dist_km} km)."
+                "travel_time": val_res.get("travel_time", f"{flight_hrs} hrs (Flight)"),
+                "recommended_mode": val_res.get("recommended_mode", "Commercial Airline Flight"),
+                "transport_options": val_res.get("transport_options", base_options),
+                "route_summary": val_res.get("route_summary", f"Geographic transport corridor between {src_name} and {dest_name}."),
             }
     except Exception as e:
         logger.warning(f"Geocoding route calculation exception for '{source}' -> '{destination}': {e}")
@@ -789,14 +769,18 @@ async def famous_restaurants_data(city: str, query: str | None = None) -> list[d
             {"restaurant_name": "Katz's Delicatessen", "speciality": "Legendary Pastrami on Rye & Matzo Ball Soup", "rating": "4.6 ⭐", "location": "Lower East Side", "why_popular": "NYC institution operating since 1888, famous worldwide for pastrami sandwiches."},
         ],
         "paris": [
+            {"restaurant_name": "Saravanaa Bhavan Paris", "speciality": "Authentic South Indian Vegetarian Thalis, Dosas & Filter Coffee (Pure Veg)", "rating": "4.6 ⭐", "location": "170 Rue du Faubourg Saint-Denis, Gare du Nord", "why_popular": "Top pure-vegetarian South Indian dining landmark in Paris."},
+            {"restaurant_name": "Gandhi Restaurant Paris", "speciality": "North Indian Curry, Butter Chicken, Lamb Rogan Josh, Garlic Naan", "rating": "4.7 ⭐", "location": "66 Rue La Fayette, 9th Arrondissement", "why_popular": "Iconic authentic Indian restaurant celebrated for royal Mughlai & North Indian dishes."},
+            {"restaurant_name": "Le Jardin du Kashmir", "speciality": "Kashmiri Lamb Biryani, Chicken Tikka, Tandoori Platters", "rating": "4.5 ⭐", "location": "60 Rue Rodier, 9th Arrondissement", "why_popular": "One of Paris's oldest and most authentic Kashmiri & North Indian establishments since 1980."},
+            {"restaurant_name": "New Jawad Paris", "speciality": "Tandoori Specialties, Samosas, Chicken Korma & Peshawari Naan", "rating": "4.8 ⭐", "location": "12 Avenue Rapp, 7th Arrondissement (Near Eiffel Tower)", "why_popular": "Celebrated fine-dining Indian-Pakistani restaurant near the Eiffel Tower."},
             {"restaurant_name": "Le Relais de l'Entrecôte", "speciality": "Steak Frites with Secret House Herb Butter Sauce", "rating": "4.6 ⭐", "location": "Saint-Germain-des-Prés / Champs-Élysées", "why_popular": "Iconic Parisian bistro famous for one classic, perfectly executed dish with endless fries."},
             {"restaurant_name": "Bistrot Paul Bert", "speciality": "Traditional French Bistro Fare (Steak au Poivre, Paris-Brest)", "rating": "4.7 ⭐", "location": "11th Arrondissement", "why_popular": "Classic Parisian bistro beloved by chefs for authentic bistro classics."},
             {"restaurant_name": "L'As du Fallafel", "speciality": "Special Fallafel Pita, Roasted Eggplant & Hummus (Veg-Friendly)", "rating": "4.7 ⭐", "location": "Rue des Rosiers, Le Marais", "why_popular": "World-famous falafel hotspot in the historic Jewish Quarter."},
-            {"restaurant_name": "Saravanaa Bhavan Paris", "speciality": "Traditional South Indian Thalis & Dosas (Pure Veg)", "rating": "4.4 ⭐", "location": "Gare du Nord", "why_popular": "Top pure-vegetarian Indian destination in Paris."},
         ],
         "london": [
             {"restaurant_name": "Dishoom", "speciality": "House Black Daal, Bacon Naan Roll, Chicken Ruby", "rating": "4.7 ⭐", "location": "Covent Garden / Shoreditch / King's Cross", "why_popular": "Homage to old Bombay Irani cafés with legendary House Black Daal."},
             {"restaurant_name": "Gymkhana", "speciality": "Wild Boar Biryani, Duck Dosa, Kasoori Methi Murgh", "rating": "4.8 ⭐", "location": "Mayfair", "why_popular": "Two-Michelin-starred colonial Indian gymkhana club dining."},
+            {"restaurant_name": "Saravanaa Bhavan London", "speciality": "South Indian Vegetarian Thalis, Dosas (Pure Veg)", "rating": "4.5 ⭐", "location": "Leicester Square / Wembley", "why_popular": "World-famous vegetarian South Indian chain."},
             {"restaurant_name": "Rules Restaurant", "speciality": "Classic British Game, Roast Beef & Yorkshire Pudding", "rating": "4.6 ⭐", "location": "Maiden Lane, Covent Garden", "why_popular": "London's oldest restaurant, established in 1798, celebrating traditional British cuisine."},
         ],
         "tokyo": [
@@ -810,17 +794,10 @@ async def famous_restaurants_data(city: str, query: str | None = None) -> list[d
     if city_key in curated_restaurants:
         curated_list = curated_restaurants[city_key]
         if query:
-            q_term = query.lower().strip()
-            # If vegetarian requested, prioritize veg spots
-            if any(v in q_term for v in ["veg", "vegetarian", "pure veg"]):
-                filtered = [r for r in curated_list if any(term in r["speciality"].lower() or term in r["restaurant_name"].lower() for term in ["veg", "thali", "sweets", "chaat", "salad", "kachori"])]
-                if filtered:
-                    logger.debug(f"Returning {len(filtered)} vegetarian curated restaurants for '{city}'")
-                    return filtered
-            # General cuisine match
-            matched = [r for r in curated_list if q_term in r["speciality"].lower() or q_term in r["restaurant_name"].lower()]
-            if matched:
-                return matched
+            filtered = [r for r in curated_list if validate_restaurant_match(r, query)]
+            if filtered:
+                logger.debug(f"Returning {len(filtered)} validated curated restaurants for '{city}' with cuisine '{query}'")
+                return filtered
         return curated_list
 
     # --- Live OpenStreetMap Overpass API Integration for all other cities ---

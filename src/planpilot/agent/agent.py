@@ -25,6 +25,12 @@ from planpilot.utils.preferences import (
     build_preference_context,
     auto_update_preferences_from_text,
 )
+from planpilot.utils.validation import (
+    extract_requirements,
+    validate_and_enforce_sections,
+    UserRequirements,
+    MANDATORY_SECTIONS,
+)
 
 
 class ToolFunction:
@@ -63,28 +69,26 @@ class PlanPilotAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are PlanPilot, a world-class AI Travel & Weekend Concierge powered by the Model Context Protocol (MCP) tool server.\n"
-                    "You have access to 6 specialized tools:\n"
-                    "1. `travel_route`: Validates real-world cities and computes transport routes, travel times, distances, and modes.\n"
-                    "2. `get_weather`: Retrieves real-time weather and precipitation forecasts.\n"
-                    "3. `find_budget_hotels`: Searches live accommodations across budget, mid-range, and luxury tiers.\n"
-                    "4. `famous_restaurants`: Discovers authentic local restaurants, cuisines, and regional specialities.\n"
-                    "5. `discover_events`: Finds concerts, exhibitions, and live cultural events.\n"
-                    "6. `search_books`: Searches book recommendations with Open Library links.\n\n"
-                    "CRITICAL STRUCTURE & FORMATTING RULES:\n"
-                    "- When the user requests a trip plan or itinerary, you MUST call the relevant tools first.\n"
-                    "- When compiling your final response, you MUST follow this EXACT structured markdown format with these exact headers:\n\n"
-                    "### 📍 Destination\n<City, State/Country>\n\n"
-                    "### 🌤️ Weather\n<Temperature in °C, wind in km/h, conditions, rain forecast>\n\n"
-                    "### 🛣️ Travel Route & Transportation\n<Distance in km, travel duration, recommended transport: Train / Drive / Flight / Bus with estimated costs>\n\n"
-                    "### 🏨 Hotels & Accommodations\n| Hotel Name | Price Range | Rating | Location |\n|---|---|---|---|\n\n"
-                    "### 🍽️ Famous Restaurants & Food Spots\n<Bulleted list of authentic dining spots with dish specialities and locations>\n\n"
-                    "### 🎟️ Local Events & Activities\n<Bulleted list of live events, sightseeing spots, and cultural activities>\n\n"
-                    "### 📅 Suggested Day-by-Day Itinerary\n- **Day 1**: <Morning, Afternoon, Evening schedule>\n- **Day 2**: <Morning, Afternoon, Evening schedule>\n- **Day 3**: <Morning, Afternoon, Evening schedule>\n\n"
-                    "### 🏆 Trip Score\n**<Score>/100 — <Quality Label>**\n\n"
-                    "### 💡 Concierge Reasoning\n<Concise explanation of how recommendations match the user's budget, vibe, and dietary preferences>\n\n"
-                    "### ⚙️ Tools Used\n✓ Weather  ✓ Route  ✓ Hotels  ✓ Restaurants  ✓ Events\n\n"
-                    "- Always include units (°C, km/h, km, currency). Never invent or hallucinate data."
+                    "You are PlanPilot, an elite AI Travel & Weekend Concierge powered by Model Context Protocol (MCP) tools.\n"
+                    "Your mission is to craft comprehensive, factual, geographically-validated travel guides with zero hallucinations.\n\n"
+                    "=== MANDATORY 11-SECTION STRUCTURE ===\n"
+                    "For all travel plans, you MUST structure your response with these exact Markdown headers in this order:\n\n"
+                    "# Destination Overview\n<Engaging summary of the destination, setting, highlights>\n\n"
+                    "# Weather\n<Temperature in °C, conditions, rain probability. If travel dates are not specified, state that this is current / seasonal baseline>\n\n"
+                    "# How to Reach\n<Geographically validated transit: If cross-border or >2000 km, recommend Flights only. Disallow driving/local trains for intercontinental travel>\n\n"
+                    "# Estimated Budget\n<Cost breakdown for stay, dining, transit, activities tailored to budget tier>\n\n"
+                    "# Accommodation Options\n<List or table with Hotel Name, Area, Approx Price, Hotel Class (e.g. 3-Star/4-Star/Hostel), and Review Rating (e.g. 4.5/5.0 ⭐). Never confuse star class with review score>\n\n"
+                    "# Restaurants\n<Strictly matching user's requested cuisine/dietary preference with authentic spots, specialities, locations>\n\n"
+                    "# Upcoming Events\n<Concerts, cultural festivals, exhibitions, or top seasonal experiences>\n\n"
+                    "# History of Destination\n<Rich historical overview of the city, founding, landmarks, and heritage>\n\n"
+                    "# Recommended Books\n<Curated literary works and travel books about the destination with author and Open Library links>\n\n"
+                    "# Suggested Itinerary\n<Structured Day-by-Day schedule (Morning, Afternoon, Evening)>\n\n"
+                    "# Travel Tips\n<Local transit passes, payments/currency, reservations, and insider advice>\n\n"
+                    "=== STRICT VALIDATION RULES ===\n"
+                    "- Never recommend driving or local trains for intercontinental / >2000km routes (e.g. Ahmedabad to Paris).\n"
+                    "- If the user asks for Indian food, recommend ONLY Indian restaurants. If Vegetarian, ONLY vegetarian.\n"
+                    "- Never invent exact future weather when dates are unspecified.\n"
+                    "- Always include units (°C, km/h, km, currency)."
                 ),
             }
         ]
@@ -95,28 +99,26 @@ class PlanPilotAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are PlanPilot, a world-class AI Travel & Weekend Concierge powered by the Model Context Protocol (MCP) tool server.\n"
-                    "You have access to 6 specialized tools:\n"
-                    "1. `travel_route`: Validates real-world cities and computes transport routes, travel times, distances, and modes.\n"
-                    "2. `get_weather`: Retrieves real-time weather and precipitation forecasts.\n"
-                    "3. `find_budget_hotels`: Searches live accommodations across budget, mid-range, and luxury tiers.\n"
-                    "4. `famous_restaurants`: Discovers authentic local restaurants, cuisines, and regional specialities.\n"
-                    "5. `discover_events`: Finds concerts, exhibitions, and live cultural events.\n"
-                    "6. `search_books`: Searches book recommendations with Open Library links.\n\n"
-                    "CRITICAL STRUCTURE & FORMATTING RULES:\n"
-                    "- When the user requests a trip plan or itinerary, you MUST call the relevant tools first.\n"
-                    "- When compiling your final response, you MUST follow this EXACT structured markdown format with these exact headers:\n\n"
-                    "### 📍 Destination\n<City, State/Country>\n\n"
-                    "### 🌤️ Weather\n<Temperature in °C, wind in km/h, conditions, rain forecast>\n\n"
-                    "### 🛣️ Travel Route & Transportation\n<Distance in km, travel duration, recommended transport: Train / Drive / Flight / Bus with estimated costs>\n\n"
-                    "### 🏨 Hotels & Accommodations\n| Hotel Name | Price Range | Rating | Location |\n|---|---|---|---|\n\n"
-                    "### 🍽️ Famous Restaurants & Food Spots\n<Bulleted list of authentic dining spots with dish specialities and locations>\n\n"
-                    "### 🎟️ Local Events & Activities\n<Bulleted list of live events, sightseeing spots, and cultural activities>\n\n"
-                    "### 📅 Suggested Day-by-Day Itinerary\n- **Day 1**: <Morning, Afternoon, Evening schedule>\n- **Day 2**: <Morning, Afternoon, Evening schedule>\n- **Day 3**: <Morning, Afternoon, Evening schedule>\n\n"
-                    "### 🏆 Trip Score\n**<Score>/100 — <Quality Label>**\n\n"
-                    "### 💡 Concierge Reasoning\n<Concise explanation of how recommendations match the user's budget, vibe, and dietary preferences>\n\n"
-                    "### ⚙️ Tools Used\n✓ Weather  ✓ Route  ✓ Hotels  ✓ Restaurants  ✓ Events\n\n"
-                    "- Always include units (°C, km/h, km, currency). Never invent or hallucinate data."
+                    "You are PlanPilot, an elite AI Travel & Weekend Concierge powered by Model Context Protocol (MCP) tools.\n"
+                    "Your mission is to craft comprehensive, factual, geographically-validated travel guides with zero hallucinations.\n\n"
+                    "=== MANDATORY 11-SECTION STRUCTURE ===\n"
+                    "For all travel plans, you MUST structure your response with these exact Markdown headers in this order:\n\n"
+                    "# Destination Overview\n<Engaging summary of the destination, setting, highlights>\n\n"
+                    "# Weather\n<Temperature in °C, conditions, rain probability. If travel dates are not specified, state that this is current / seasonal baseline>\n\n"
+                    "# How to Reach\n<Geographically validated transit: If cross-border or >2000 km, recommend Flights only. Disallow driving/local trains for intercontinental travel>\n\n"
+                    "# Estimated Budget\n<Cost breakdown for stay, dining, transit, activities tailored to budget tier>\n\n"
+                    "# Accommodation Options\n<List or table with Hotel Name, Area, Approx Price, Hotel Class (e.g. 3-Star/4-Star/Hostel), and Review Rating (e.g. 4.5/5.0 ⭐). Never confuse star class with review score>\n\n"
+                    "# Restaurants\n<Strictly matching user's requested cuisine/dietary preference with authentic spots, specialities, locations>\n\n"
+                    "# Upcoming Events\n<Concerts, cultural festivals, exhibitions, or top seasonal experiences>\n\n"
+                    "# History of Destination\n<Rich historical overview of the city, founding, landmarks, and heritage>\n\n"
+                    "# Recommended Books\n<Curated literary works and travel books about the destination with author and Open Library links>\n\n"
+                    "# Suggested Itinerary\n<Structured Day-by-Day schedule (Morning, Afternoon, Evening)>\n\n"
+                    "# Travel Tips\n<Local transit passes, payments/currency, reservations, and insider advice>\n\n"
+                    "=== STRICT VALIDATION RULES ===\n"
+                    "- Never recommend driving or local trains for intercontinental / >2000km routes (e.g. Ahmedabad to Paris).\n"
+                    "- If the user asks for Indian food, recommend ONLY Indian restaurants. If Vegetarian, ONLY vegetarian.\n"
+                    "- Never invent exact future weather when dates are unspecified.\n"
+                    "- Always include units (°C, km/h, km, currency)."
                 ),
             }
         ]
@@ -485,6 +487,107 @@ class PlanPilotAgent:
                         prop_data["type"] = "string"
         return sanitized
 
+    def _call_openrouter(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+    ) -> LLMResponse:
+        """Helper to invoke OpenRouter API with OpenAI-compatible schemas, tool calling, and backoff retry."""
+        import time
+        import httpx
+
+        # 1. Format messages for OpenRouter (OpenAI-compatible)
+        openrouter_messages = self._prepare_groq_messages(messages)
+
+        # 2. Invoke OpenRouter API
+        url = f"{self.settings.openrouter_base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.settings.openrouter_api_key}",
+            "HTTP-Referer": "https://github.com/PlanPilot",
+            "X-Title": "PlanPilot AI",
+            "Content-Type": "application/json",
+        }
+        payload: dict[str, Any] = {
+            "model": self.settings.openrouter_model,
+            "messages": openrouter_messages,
+            "temperature": 0.0,
+        }
+        if tools:
+            payload["tools"] = self._sanitize_tool_schema_for_groq(tools)
+            payload["tool_choice"] = "auto"
+
+        with httpx.Client(timeout=60.0) as client:
+            max_retries = 3
+            for attempt in range(max_retries):
+                resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code == 429:
+                    retry_after = 2
+                    try:
+                        err_meta = resp.json().get("error", {}).get("metadata", {})
+                        retry_after = int(err_meta.get("retry_after_seconds", 2))
+                    except Exception:
+                        retry_after = int(resp.headers.get("retry-after", "2"))
+                    print(f"OpenRouter Rate Limit (429). Waiting {retry_after + 1}s before retry...", flush=True)
+                    time.sleep(retry_after + 1)
+                    continue
+                if resp.status_code >= 400:
+                    print("OPENROUTER API ERROR RESPONSE BODY:", resp.text, flush=True)
+                    if resp.status_code == 401:
+                        raise ValueError(
+                            "🔑 Invalid or Expired OpenRouter API Key! Please verify your key at https://openrouter.ai/keys."
+                        )
+                    # If model doesn't support tools, fallback to no-tools
+                    if ("tools" in resp.text.lower() or "not supported" in resp.text.lower()) and "tools" in payload:
+                        print(f"Model '{payload['model']}' tool calling issue on OpenRouter. Falling back to text tool calling...", flush=True)
+                        payload.pop("tools", None)
+                        payload.pop("tool_choice", None)
+                        resp = client.post(url, json=payload, headers=headers)
+                if resp.status_code < 400:
+                    break
+
+            resp.raise_for_status()
+            data = resp.json()
+
+        choices = data.get("choices", [])
+        if not choices:
+            return LLMResponse(message=LLMMessage(content="", tool_calls=[]))
+
+        choice = choices[0]["message"]
+        content = choice.get("content") or ""
+        if content:
+            content = re.sub(r"<think>.*?</think>", "", content, flags=re.DOTALL).strip()
+
+        # Parse tool calls
+        raw_tool_calls = choice.get("tool_calls", [])
+        tool_calls = []
+        for tc in raw_tool_calls:
+            func_data = tc.get("function", {})
+            name = func_data.get("name")
+            args_str = func_data.get("arguments", "{}")
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+            except Exception:
+                args = {}
+            tool_calls.append(
+                ToolCall(
+                    id=tc.get("id", f"call_{len(tool_calls)+1}"),
+                    function=ToolFunction(name=name, arguments=args),
+                )
+            )
+
+        if not tool_calls and content:
+            tool_calls = self._parse_text_tool_calls(content)
+
+        # Track usage metrics
+        usage = data.get("usage", {})
+        prompt_tokens = usage.get("prompt_tokens", 0)
+        completion_tokens = usage.get("completion_tokens", 0)
+        if hasattr(self, "last_metrics") and self.last_metrics is not None:
+            self.last_metrics["input_tokens"] += prompt_tokens
+            self.last_metrics["output_tokens"] += completion_tokens
+            self.last_metrics["total_tokens"] += (prompt_tokens + completion_tokens)
+            self.last_metrics["llm_calls"] += 1
+
+        return LLMResponse(message=LLMMessage(content=content, tool_calls=tool_calls))
+
     @retry(
         stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=5, max=60), reraise=True
     )
@@ -499,6 +602,9 @@ class PlanPilotAgent:
 
         if provider == "gemini" and self.settings.google_api_key:
             return self._call_gemini(messages, tools)
+
+        elif provider == "openrouter" and self.settings.openrouter_api_key:
+            return self._call_openrouter(messages, tools)
 
         elif provider == "groq" and self.settings.groq_api_key:
             # 1. Format messages for Groq
@@ -792,21 +898,37 @@ class PlanPilotAgent:
         # Auto-extract preference declarations (e.g., 'I live in Indore', 'Vegetarian') from query prompt
         auto_update_preferences_from_text(user_query)
 
-        # Inject user preferences as contextual system message for this turn
+        # Structured Requirement Extraction
         prefs = load_preferences()
+        reqs = extract_requirements(user_query, user_prefs=prefs)
+
+        # Inject user preferences as contextual system message for this turn
         pref_context = build_preference_context(prefs)
         if goal:
             pref_context = f"Active Session Goal: {goal}. " + pref_context
-        if pref_context:
-            self.messages.append({
-                "role": "system",
-                "content": (
-                    f"{pref_context}\n\n"
-                    "INSTRUCTION: Fulfill the user's request using their stored JSON profile entities. "
-                    "DEPARTURE CITY RULE: If the user did NOT specify a starting/departure city in their prompt, use 'home_city' from their profile as the source for travel_route and travel planning. "
-                    "Only call tools directly relevant to the query."
-                )
-            })
+        req_summary = f"Extracted Trip Requirements: Origin: '{reqs.origin}', Destination: '{reqs.destination}', Cuisine: '{reqs.cuisine or 'Any'}', Budget: '{reqs.budget_level}', Duration: '{reqs.itinerary_duration}', Dates: '{reqs.travel_dates or 'Unspecified'}'. "
+        
+        self.messages.append({
+            "role": "system",
+            "content": (
+                f"{req_summary}\n{pref_context}\n\n"
+                "INSTRUCTION: Fulfill the user's request using their stored JSON profile entities. "
+                "DEPARTURE CITY RULE: Always use the extracted departure city ('origin') for travel_route. "
+                "CUISINE RULE: If cuisine preference is specified, recommend ONLY restaurants matching that cuisine. "
+                "Only call tools directly relevant to the query."
+            )
+        })
+
+        tool_context: dict[str, Any] = {
+            "origin": reqs.origin,
+            "destination": reqs.destination,
+            "weather": {},
+            "route": {},
+            "hotels": [],
+            "restaurants": [],
+            "events": [],
+            "books": [],
+        }
 
         # Sanitize stale messages: remove tool_calls key if it's None/empty (prevents Groq API errors)
         for msg in self.messages:
@@ -924,22 +1046,19 @@ class PlanPilotAgent:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments
 
-                    # Departure City Fallback for travel_route: if source is omitted or empty, use home_city from user_preferences.json
+                    # Departure City Fallback for travel_route: if source is omitted or empty, use reqs.origin
                     if tool_name == "travel_route":
                         src_arg = str(tool_args.get("source", "")).strip()
                         if not src_arg or src_arg.lower() in ("none", "null", "unknown", "city", "my city", "home"):
-                            home_city = prefs.get("home_city")
-                            if home_city:
-                                tool_args["source"] = home_city
+                            if reqs.origin:
+                                tool_args["source"] = reqs.origin
                                 if status_callback:
-                                    await status_callback(f"Using stored home city '{home_city}' as departure location...")
+                                    await status_callback(f"Using departure location '{reqs.origin}'...")
 
                     # Cuisine Preference Auto-filling for famous_restaurants
                     if tool_name == "famous_restaurants" and not tool_args.get("query"):
-                        for cuisine in ["indian", "italian", "chinese", "mexican", "thai", "japanese", "vegan", "vegetarian", "seafood", "street food"]:
-                            if cuisine in q_lower:
-                                tool_args["query"] = f"{cuisine.title()} food"
-                                break
+                        if reqs.cuisine:
+                            tool_args["query"] = f"{reqs.cuisine} food"
 
                     # Deduplicate: skip if exact same call already made this turn
                     call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
@@ -965,6 +1084,23 @@ class PlanPilotAgent:
                         result_text = "\n".join(
                             [block.text for block in result.content if hasattr(block, "text")]
                         )
+                        # Cache parsed output into tool_context for quality gate
+                        try:
+                            parsed_json = json.loads(result_text)
+                            if tool_name == "get_weather" and isinstance(parsed_json, dict):
+                                tool_context["weather"] = parsed_json
+                            elif tool_name == "travel_route" and isinstance(parsed_json, dict):
+                                tool_context["route"] = parsed_json
+                            elif tool_name == "find_budget_hotels" and isinstance(parsed_json, list):
+                                tool_context["hotels"] = parsed_json
+                            elif tool_name == "famous_restaurants" and isinstance(parsed_json, list):
+                                tool_context["restaurants"] = parsed_json
+                            elif tool_name == "discover_events" and isinstance(parsed_json, list):
+                                tool_context["events"] = parsed_json
+                            elif tool_name == "search_books" and isinstance(parsed_json, list):
+                                tool_context["books"] = parsed_json
+                        except Exception:
+                            pass
                     except Exception as e:
                         result_text = json.dumps({"error": f"Tool execution failed: {str(e)}"})
 
@@ -983,7 +1119,7 @@ class PlanPilotAgent:
 
             # --- REFLECTION PASS ---
             if status_callback:
-                await status_callback("Performing self-reflection review...")
+                await status_callback("Performing self-reflection & quality gate review...")
 
             # Extract tool outputs *only* from the current turn
             current_turn_tool_outputs = []
@@ -995,22 +1131,28 @@ class PlanPilotAgent:
             tool_outputs_str = "\n".join(current_turn_tool_outputs)
 
             last_answer = self.messages[-1].get("content") or ""
-            if has_travel_plan:
+            if has_travel_plan or reqs.destination != "Destination":
                 ref_sys_prompt = (
-                    "You are a quality assurance reviewer and personalisation engine for PlanPilot AI Travel Planner. Review the draft response and output a refined version.\n"
-                    "Ensure the response is accurate, beautifully formatted in clean markdown, and highly helpful.\n"
-                    "MANDATORY STRUCTURE: You MUST output using these exact structured markdown headers:\n\n"
-                    "### 📍 Destination\n<City, State/Country>\n\n"
-                    "### 🌤️ Weather\n<Summary with temperature in °C, wind in km/h, rain forecast>\n\n"
-                    "### 🛣️ Travel Route & Transportation\n<Distance in km, travel duration, recommended transport: Train / Drive / Flight / Bus with estimated costs>\n\n"
-                    "### 🏨 Hotels & Accommodations\n| Hotel Name | Price Range | Rating | Location |\n|---|---|---|---|\n\n"
-                    "### 🍽️ Famous Restaurants & Food Spots\n<Bulleted list of authentic dining spots with dish specialities and locations>\n\n"
-                    "### 🎟️ Local Events & Activities\n<Bulleted list of live events, sightseeing spots, and cultural activities>\n\n"
-                    "### 📅 Suggested Day-by-Day Itinerary\n- **Day 1**: <Morning, Afternoon, Evening schedule>\n- **Day 2**: <Morning, Afternoon, Evening schedule>\n- **Day 3**: <Morning, Afternoon, Evening schedule>\n\n"
-                    "### 🏆 Trip Score\n**<Score>/100 — <Quality Label>**\n\n"
-                    "### 💡 Concierge Reasoning\n<Concise explanation of how recommendations match the user's budget, vibe, and dietary preferences>\n\n"
-                    "### ⚙️ Tools Used\n✓ Weather  ✓ Route  ✓ Hotels  ✓ Restaurants  ✓ Events\n\n"
-                    "Units: Always include units (°C, km/h, km, currency).\n"
+                    "You are a quality assurance reviewer and anti-hallucination engine for PlanPilot AI Travel Planner.\n"
+                    "Review the draft response and output a refined version.\n"
+                    "Ensure the response is accurate, beautifully formatted in clean markdown, and contains NO hallucinations.\n"
+                    "MANDATORY 11-SECTION FORMAT: You MUST output all of these exact 11 markdown headers:\n\n"
+                    "# Destination Overview\n\n"
+                    "# Weather\n\n"
+                    "# How to Reach\n\n"
+                    "# Estimated Budget\n\n"
+                    "# Accommodation Options\n\n"
+                    "# Restaurants\n\n"
+                    "# Upcoming Events\n\n"
+                    "# History of Destination\n\n"
+                    "# Recommended Books\n\n"
+                    "# Suggested Itinerary\n\n"
+                    "# Travel Tips\n\n"
+                    "RULES:\n"
+                    "1. If distance > 2000 km or cross-border, recommend Flights only. DO NOT suggest driving or local trains.\n"
+                    "2. If requested cuisine is specified, recommend ONLY restaurants of that cuisine.\n"
+                    "3. Differentiate Hotel Class (e.g. 3-Star) from Review Rating (e.g. 4.5/5.0 ⭐).\n"
+                    "4. If travel dates are missing, explicitly state that weather values are current/seasonal baseline.\n"
                     "Do NOT mention reflection or QA in the output."
                 )
             else:
@@ -1044,6 +1186,10 @@ class PlanPilotAgent:
             final_answer = ref_resp.message.content or last_answer
             final_answer = re.sub(r"<think>.*?</think>", "", final_answer, flags=re.DOTALL).strip()
 
+            # --- POST-GENERATION QUALITY GATE ---
+            if has_travel_plan or reqs.destination != "Destination":
+                final_answer = validate_and_enforce_sections(final_answer, reqs, tool_context)
+
             # Update the last assistant response with the QA refined answer
             self.messages[-1]["content"] = final_answer
 
@@ -1054,6 +1200,7 @@ class PlanPilotAgent:
                 self.last_metrics["latency_sec"] = round(time.monotonic() - start_time, 2)
 
             return final_answer
+
 
         except BaseException as e:
             # Catch anyio TaskGroup / BaseExceptionGroup errors and return a clean message

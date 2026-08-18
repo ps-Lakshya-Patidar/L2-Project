@@ -246,6 +246,12 @@ with st.sidebar:
             st.caption(f"Model: `{settings.gemini_model}`")
         else:
             st.markdown('<span class="badge-offline">🔴 Google API Key Missing</span>', unsafe_allow_html=True)
+    elif provider == "openrouter":
+        if settings.openrouter_api_key:
+            st.markdown('<span class="badge-online">🟢 OpenRouter Active</span>', unsafe_allow_html=True)
+            st.caption(f"Model: `{settings.openrouter_model}`")
+        else:
+            st.markdown('<span class="badge-offline">🔴 OpenRouter Key Missing</span>', unsafe_allow_html=True)
     elif provider == "groq":
         if settings.groq_api_key:
             st.markdown('<span class="badge-online">🟢 Groq Cloud</span>', unsafe_allow_html=True)
@@ -299,12 +305,14 @@ with st.sidebar:
 
     # --- Model Config ---
     with st.expander("⚙️ Model Configuration", expanded=True):
-        provider_options = ["Gemini", "Groq", "Ollama"]
+        provider_options = ["Gemini", "OpenRouter", "Groq", "Ollama"]
         current_idx = 0
-        if provider == "groq":
+        if provider == "openrouter":
             current_idx = 1
-        elif provider == "ollama":
+        elif provider == "groq":
             current_idx = 2
+        elif provider == "ollama":
+            current_idx = 3
 
         provider_select = st.selectbox(
             "LLM Provider:", options=provider_options, index=current_idx
@@ -320,7 +328,16 @@ with st.sidebar:
                 "gemini-3.6-flash",
                 "gemini-3.7-flash",
                 "gemini-3.5-flash",
+                "gemini-2.5-flash",
+                "gemini-2.5-pro",
+                "gemini-2.5-flash-lite",
+                "gemini-2.0-flash",
+                "gemini-2.0-flash-lite",
+                "gemini-2.0-pro-exp-02-05",
+                "gemini-1.5-flash",
+                "gemini-1.5-pro",
                 "gemini-flash-latest",
+                "gemini-pro-latest",
                 "Custom Model..."
             ]
             curr_gem = settings.gemini_model
@@ -337,10 +354,78 @@ with st.sidebar:
             else:
                 gem_input = selected_gem
 
-            if gem_input != settings.gemini_model:
-                settings.gemini_model = gem_input
-                st.session_state.agent.reset()
-                st.rerun()
+            gem_key_input = st.text_input(
+                "Google Gemini API Key:",
+                value=settings.google_api_key or "",
+                type="password",
+                placeholder="AQ.Ab8RN6Io6b...",
+            )
+
+            if (gem_input != settings.gemini_model) or (gem_key_input and gem_key_input != settings.google_api_key):
+                if st.button("Apply Gemini Settings", use_container_width=True):
+                    settings.gemini_model = gem_input
+                    if gem_key_input:
+                        settings.google_api_key = gem_key_input
+                    st.session_state.agent.reset()
+                    st.success("Gemini settings applied!")
+                    st.rerun()
+
+        elif provider_select == "OpenRouter":
+            openrouter_free_models = [
+                "openrouter/free",
+                "openai/gpt-oss-20b:free",
+                "nvidia/nemotron-3-nano-30b-a3b:free",
+                "google/gemma-4-31b-it:free",
+                "google/gemma-4-26b-a4b-it:free",
+                "nvidia/nemotron-3.5-lightning:free",
+                "nvidia/nemotron-3-super-120b-a12b:free",
+                "nvidia/nemotron-3-ultra-550b-a55b:free",
+                "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
+                "nvidia/nemotron-nano-12b-v2-vl:free",
+                "nvidia/nemotron-nano-9b-v2:free",
+                "z-ai/glm-5.2:free",
+                "cohere/north-mini-code:free",
+                "dots-studio/dots-3-note-preview:free",
+                "poolside/laguna-s-2.1:free",
+                "poolside/laguna-xs-2.1:free",
+                "meta-llama/llama-3.3-70b-instruct:free",
+                "meta-llama/llama-3.1-8b-instruct:free",
+                "deepseek/deepseek-r1:free",
+                "deepseek/deepseek-chat:free",
+                "mistralai/mistral-7b-instruct:free",
+                "qwen/qwen-2.5-72b-instruct:free",
+                "Custom Model..."
+            ]
+            curr_or = settings.openrouter_model
+            if curr_or not in openrouter_free_models:
+                openrouter_free_models.insert(0, curr_or)
+
+            selected_or = st.selectbox(
+                "OpenRouter Free Model:",
+                options=openrouter_free_models,
+                index=openrouter_free_models.index(curr_or) if curr_or in openrouter_free_models else 0
+            )
+
+            if selected_or == "Custom Model...":
+                or_model_input = st.text_input("Enter Custom OpenRouter Model:", value=curr_or)
+            else:
+                or_model_input = selected_or
+
+            or_key_input = st.text_input(
+                "OpenRouter API Key:",
+                value=settings.openrouter_api_key or "",
+                type="password",
+                placeholder="sk-or-v1-...",
+            )
+
+            if (or_model_input != settings.openrouter_model) or (or_key_input and or_key_input != settings.openrouter_api_key):
+                if st.button("Apply OpenRouter Settings", use_container_width=True):
+                    settings.openrouter_model = or_model_input
+                    if or_key_input:
+                        settings.openrouter_api_key = or_key_input
+                    st.session_state.agent.reset()
+                    st.success("OpenRouter settings applied!")
+                    st.rerun()
 
         elif provider_select == "Groq":
             groq_models = [
@@ -443,6 +528,13 @@ with tab_chat:
             mod = model.lower().strip()
             if prov == "ollama":
                 return "$0.00 (Local)"
+            if prov == "openrouter":
+                if ":free" in mod or mod == "openrouter/free":
+                    return "$0.00 (Free Tier)"
+                in_rate = 0.10
+                out_rate = 0.20
+                cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
+                return f"${cost:.6f}"
             if prov == "gemini":
                 # Google Gemini 3.6 / 3.7 / 2.5 Flash Free Tier
                 in_rate = 0.075

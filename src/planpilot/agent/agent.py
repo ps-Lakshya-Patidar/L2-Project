@@ -23,6 +23,7 @@ from planpilot.utils.logger import logger
 from planpilot.utils.preferences import (
     load_preferences,
     build_preference_context,
+    build_compact_preference_context,
     auto_update_preferences_from_text,
 )
 from planpilot.utils.validation import (
@@ -31,6 +32,40 @@ from planpilot.utils.validation import (
     UserRequirements,
     MANDATORY_SECTIONS,
 )
+
+# ---------------------------------------------------------------------------
+# Centralized prompt constants — single source of truth, no runtime duplication
+# ---------------------------------------------------------------------------
+
+# Compact 11-section system prompt (~180 tokens vs original ~420 tokens)
+_SYSTEM_PROMPT = (
+    "You are PlanPilot, an AI Travel Concierge. Use MCP tools to answer travel queries.\n"
+    "Tools: travel_route, get_weather, find_budget_hotels, famous_restaurants, discover_events, search_books.\n\n"
+    "TRAVEL PLAN STRUCTURE — use these exact # headers in order:\n"
+    "# Destination Overview | # Weather | # How to Reach | # Estimated Budget | "
+    "# Accommodation Options | # Restaurants | # Upcoming Events | # History of Destination | "
+    "# Recommended Books | # Suggested Itinerary | # Travel Tips\n\n"
+    "RULES:\n"
+    "- Cross-border/>2000km: flights only, no drive/train.\n"
+    "- Match cuisine exactly (Indian→Indian only, Vegetarian→veg only).\n"
+    "- Hotel Class (3-Star) ≠ Review Rating (4.5⭐). Show both separately.\n"
+    "- No travel dates: weather = current/seasonal baseline, never invented forecasts.\n"
+    "- Always include units (°C, km/h, km, currency)."
+)
+
+# Lightweight verification prompt for the reflection pass (~80 tokens vs ~280 tokens)
+_REFLECT_TRAVEL = (
+    "You are a travel guide editor. Fix the draft below: ensure all 11 # section headers exist "
+    "(Destination Overview, Weather, How to Reach, Estimated Budget, Accommodation Options, "
+    "Restaurants, Upcoming Events, History of Destination, Recommended Books, Suggested Itinerary, Travel Tips), "
+    "no hallucinated data, flights-only for cross-border routes, correct cuisine match. "
+    "Output the corrected guide only, no commentary."
+)
+_REFLECT_SINGLE = (
+    "You are a travel assistant editor. Reformat the draft as clean markdown. "
+    "Answer only the topic asked. No empty sections. No QA commentary."
+)
+
 
 
 class ToolFunction:
@@ -66,62 +101,12 @@ class PlanPilotAgent:
         )
         self.last_metrics: dict[str, Any] | None = None
         self.messages: list[dict[str, Any]] = [
-            {
-                "role": "system",
-                "content": (
-                    "You are PlanPilot, an elite AI Travel & Weekend Concierge powered by Model Context Protocol (MCP) tools.\n"
-                    "Your mission is to craft comprehensive, factual, geographically-validated travel guides with zero hallucinations.\n\n"
-                    "=== MANDATORY 11-SECTION STRUCTURE ===\n"
-                    "For all travel plans, you MUST structure your response with these exact Markdown headers in this order:\n\n"
-                    "# Destination Overview\n<Engaging summary of the destination, setting, highlights>\n\n"
-                    "# Weather\n<Temperature in °C, conditions, rain probability. If travel dates are not specified, state that this is current / seasonal baseline>\n\n"
-                    "# How to Reach\n<Geographically validated transit: If cross-border or >2000 km, recommend Flights only. Disallow driving/local trains for intercontinental travel>\n\n"
-                    "# Estimated Budget\n<Cost breakdown for stay, dining, transit, activities tailored to budget tier>\n\n"
-                    "# Accommodation Options\n<List or table with Hotel Name, Area, Approx Price, Hotel Class (e.g. 3-Star/4-Star/Hostel), and Review Rating (e.g. 4.5/5.0 ⭐). Never confuse star class with review score>\n\n"
-                    "# Restaurants\n<Strictly matching user's requested cuisine/dietary preference with authentic spots, specialities, locations>\n\n"
-                    "# Upcoming Events\n<Concerts, cultural festivals, exhibitions, or top seasonal experiences>\n\n"
-                    "# History of Destination\n<Rich historical overview of the city, founding, landmarks, and heritage>\n\n"
-                    "# Recommended Books\n<Curated literary works and travel books about the destination with author and Open Library links>\n\n"
-                    "# Suggested Itinerary\n<Structured Day-by-Day schedule (Morning, Afternoon, Evening)>\n\n"
-                    "# Travel Tips\n<Local transit passes, payments/currency, reservations, and insider advice>\n\n"
-                    "=== STRICT VALIDATION RULES ===\n"
-                    "- Never recommend driving or local trains for intercontinental / >2000km routes (e.g. Ahmedabad to Paris).\n"
-                    "- If the user asks for Indian food, recommend ONLY Indian restaurants. If Vegetarian, ONLY vegetarian.\n"
-                    "- Never invent exact future weather when dates are unspecified.\n"
-                    "- Always include units (°C, km/h, km, currency)."
-                ),
-            }
+            {"role": "system", "content": _SYSTEM_PROMPT}
         ]
 
     def reset(self) -> None:
         """Reset the conversation history."""
-        self.messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are PlanPilot, an elite AI Travel & Weekend Concierge powered by Model Context Protocol (MCP) tools.\n"
-                    "Your mission is to craft comprehensive, factual, geographically-validated travel guides with zero hallucinations.\n\n"
-                    "=== MANDATORY 11-SECTION STRUCTURE ===\n"
-                    "For all travel plans, you MUST structure your response with these exact Markdown headers in this order:\n\n"
-                    "# Destination Overview\n<Engaging summary of the destination, setting, highlights>\n\n"
-                    "# Weather\n<Temperature in °C, conditions, rain probability. If travel dates are not specified, state that this is current / seasonal baseline>\n\n"
-                    "# How to Reach\n<Geographically validated transit: If cross-border or >2000 km, recommend Flights only. Disallow driving/local trains for intercontinental travel>\n\n"
-                    "# Estimated Budget\n<Cost breakdown for stay, dining, transit, activities tailored to budget tier>\n\n"
-                    "# Accommodation Options\n<List or table with Hotel Name, Area, Approx Price, Hotel Class (e.g. 3-Star/4-Star/Hostel), and Review Rating (e.g. 4.5/5.0 ⭐). Never confuse star class with review score>\n\n"
-                    "# Restaurants\n<Strictly matching user's requested cuisine/dietary preference with authentic spots, specialities, locations>\n\n"
-                    "# Upcoming Events\n<Concerts, cultural festivals, exhibitions, or top seasonal experiences>\n\n"
-                    "# History of Destination\n<Rich historical overview of the city, founding, landmarks, and heritage>\n\n"
-                    "# Recommended Books\n<Curated literary works and travel books about the destination with author and Open Library links>\n\n"
-                    "# Suggested Itinerary\n<Structured Day-by-Day schedule (Morning, Afternoon, Evening)>\n\n"
-                    "# Travel Tips\n<Local transit passes, payments/currency, reservations, and insider advice>\n\n"
-                    "=== STRICT VALIDATION RULES ===\n"
-                    "- Never recommend driving or local trains for intercontinental / >2000km routes (e.g. Ahmedabad to Paris).\n"
-                    "- If the user asks for Indian food, recommend ONLY Indian restaurants. If Vegetarian, ONLY vegetarian.\n"
-                    "- Never invent exact future weather when dates are unspecified.\n"
-                    "- Always include units (°C, km/h, km, currency)."
-                ),
-            }
-        ]
+        self.messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
 
     def _merge_system_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Combine all system messages into a single system message at the start of the list."""
@@ -801,65 +786,33 @@ class PlanPilotAgent:
             "latency_sec": 0.0,
             "llm_calls": 0,
             "tool_calls": 0,
+            "reflection_input_tokens": 0,
+            "reflection_output_tokens": 0,
+            "reflection_skipped": False,
             "model": self.settings.groq_model if self.settings.llm_provider.lower().strip() == "groq" else self.settings.ollama_model,
             "provider": self.settings.llm_provider.upper().strip()
         }
         start_time = time.monotonic()
-          # 1. Dynamically set base system prompt based on provider to prevent syntax clashes (Groq vs Ollama)
         provider = self.settings.llm_provider.lower().strip()
-        system_content = (
-            "You are PlanPilot, a Personal AI Travel Planner powered by the Model Context Protocol (MCP) tool server. "
-            "The MCP server gives you access to six tools: 'get_weather', 'search_books', 'discover_events', 'find_budget_hotels', 'travel_route', and 'famous_restaurants'. "
-        )
-        if provider == "groq":
-            system_content += (
-                "For requests about weather, travel routes, budget hotels, events, or famous restaurants, you MUST call the appropriate tool first. "
-                "For comprehensive travel plan requests (e.g. 'Plan a trip to New York'), you MUST execute ALL 5 travel tools: "
-                "1. travel_route, 2. get_weather, 3. find_budget_hotels, 4. famous_restaurants, 5. discover_events. "
-                "Do NOT generate a final response until ALL 5 tools have been called. "
-                "If the user specifies a cuisine or food preference (e.g. 'Indian food'), pass query='Indian food' to famous_restaurants(city=city, query='Indian food'). "
-            )
-        else:
-            # Local model (Ollama)
-            system_content += (
-                "To call a tool, write the function call directly in your response in one of these formats:\n"
-                "- travel_route(source=\"Ahmedabad\", destination=\"New York\")\n"
-                "- get_weather(city=\"New York\")\n"
-                "- find_budget_hotels(city=\"New York\", budget=\"low\")\n"
-                "- discover_events(city=\"New York\")\n"
-                "- famous_restaurants(city=\"New York\", query=\"Indian food\")\n"
-                "- search_books(query=\"travel guide\")\n\n"
-                "Do not write introductory text or greetings when calling tools. Write ONLY tool calls until all 5 travel tools are executed. "
-                "If the user asks for specific food (e.g. 'Indian food'), pass query='Indian food' to famous_restaurants. "
-            )
-            
-        system_content += (
-            "\n\nCRITICAL OUTPUT FORMATTING & HALLUCINATION RULES:\n"
-            "1. MANDATORY TOOL EXECUTION RULE: For any travel plan request, call ALL 5 tools (Route, Weather, Hotels, Restaurants, Events). Do NOT invent or output fake hotel names or fake events if the tool was not called.\n"
-            "2. TRAVEL PLAN FORMAT RULE: When a travel plan is requested, your final output MUST be structured using these exact headers:\n"
-            "   Destination:\n   <city>\n\n"
-            "   Weather:\n   <summary with °C, km/h>\n\n"
-            "   Travel Route:\n   <summary with distance, time, transport options>\n\n"
-            "   Budget Hotels:\n   <recommended stays with price range and rating from find_budget_hotels output>\n\n"
-            "   Events:\n   <local activities and events from discover_events output>\n\n"
-            "   Restaurants:\n   <famous spots and specialities from famous_restaurants output>\n\n"
-            "   Suggested Itinerary:\n   Day 1: <morning, afternoon, evening activities>\n   Day 2: <activities>\n   Day 3: <activities>\n\n"
-            "   Reasoning:\n   <explain why these choices fit budget and food preferences>\n\n"
-            "   Tools Used:\n   ✓ Weather\n   ✓ Route\n   ✓ Hotels\n   ✓ Events\n   ✓ Restaurants\n\n"
-            "3. SINGLE QUERY RULE: For single-topic queries (e.g. only weather or only restaurants), answer directly using that specific tool.\n"
-            "4. EARTH-ONLY RULE: Tools ONLY work for real locations on Earth.\n"
-        )
 
-        if self.messages and self.messages[0].get("role") == "system":
-            self.messages[0]["content"] = system_content
+        # Ensure system prompt is always the centralized constant (no per-turn rewrite)
+        if not self.messages or self.messages[0].get("role") != "system":
+            self.messages.insert(0, {"role": "system", "content": _SYSTEM_PROMPT})
         else:
-            self.messages.insert(0, {"role": "system", "content": system_content})
+            self.messages[0]["content"] = _SYSTEM_PROMPT
 
         if status_callback:
             await status_callback("Connecting to tool server...")
 
         # Append new user message to conversation history
         self.messages.append({"role": "user", "content": user_query})
+
+        # --- History sliding window: keep system + last 10 non-system messages ---
+        system_msg = self.messages[:1]
+        history = [m for m in self.messages[1:] if m.get("role") != "system"]
+        if len(history) > 10:
+            history = history[-10:]
+        self.messages = system_msg + history
 
         # Detect domain keywords in user query
         q_lower = user_query.lower()
@@ -877,13 +830,7 @@ class PlanPilotAgent:
                       "narnia", "hogwarts", "mordor", "wakanda", "gotham", "atlantis", "asgard"]
         mentions_non_earth = any(loc in q_lower for loc in _non_earth)
         if mentions_non_earth:
-            has_weather = False
-            has_events = False
-            has_books = False
-            has_hotels = False
-            has_route = False
-            has_restaurants = False
-            has_travel_plan = False
+            has_weather = has_events = has_books = has_hotels = has_route = has_restaurants = has_travel_plan = False
 
         is_general_query = not (has_weather or has_events or has_books or has_hotels or has_route or has_restaurants or has_travel_plan)
 
@@ -894,6 +841,8 @@ class PlanPilotAgent:
         is_hotels_only = has_hotels and not (has_weather or has_events or has_books or has_route or has_restaurants or has_travel_plan)
         is_route_only = has_route and not (has_weather or has_events or has_books or has_hotels or has_restaurants or has_travel_plan)
         is_restaurants_only = has_restaurants and not (has_weather or has_events or has_books or has_hotels or has_route or has_travel_plan)
+        # Flag: single tool query → skip reflection pass
+        is_single_tool_query = is_weather_only or is_events_only or is_books_only or is_restaurants_only or is_hotels_only or is_route_only
 
         # Auto-extract preference declarations (e.g., 'I live in Indore', 'Vegetarian') from query prompt
         auto_update_preferences_from_text(user_query)
@@ -902,22 +851,18 @@ class PlanPilotAgent:
         prefs = load_preferences()
         reqs = extract_requirements(user_query, user_prefs=prefs)
 
-        # Inject user preferences as contextual system message for this turn
-        pref_context = build_preference_context(prefs)
-        if goal:
-            pref_context = f"Active Session Goal: {goal}. " + pref_context
-        req_summary = f"Extracted Trip Requirements: Origin: '{reqs.origin}', Destination: '{reqs.destination}', Cuisine: '{reqs.cuisine or 'Any'}', Budget: '{reqs.budget_level}', Duration: '{reqs.itinerary_duration}', Dates: '{reqs.travel_dates or 'Unspecified'}'. "
-        
-        self.messages.append({
-            "role": "system",
-            "content": (
-                f"{req_summary}\n{pref_context}\n\n"
-                "INSTRUCTION: Fulfill the user's request using their stored JSON profile entities. "
-                "DEPARTURE CITY RULE: Always use the extracted departure city ('origin') for travel_route. "
-                "CUISINE RULE: If cuisine preference is specified, recommend ONLY restaurants matching that cuisine. "
-                "Only call tools directly relevant to the query."
-            )
-        })
+        # Compact preference context (~30 tokens vs ~180 tokens for verbose version)
+        compact_prefs = build_compact_preference_context(prefs)
+        goal_prefix = f"Goal:{goal}. " if goal else ""
+        req_summary = (
+            f"{goal_prefix}Trip: {reqs.origin}→{reqs.destination} "
+            f"cuisine={reqs.cuisine or 'any'} budget={reqs.budget_level} "
+            f"duration={reqs.itinerary_duration} dates={reqs.travel_dates or 'unspecified'}. "
+            f"{compact_prefs}"
+        )
+
+        # Inject compact per-turn context as a single system message
+        self.messages.append({"role": "system", "content": req_summary})
 
         tool_context: dict[str, Any] = {
             "origin": reqs.origin,
@@ -1107,10 +1052,11 @@ class PlanPilotAgent:
                     if status_callback:
                         await status_callback(f"Received output from '{tool_name}'")
 
-                    # Truncate overly long tool outputs (e.g. 5+ JSON objects) to keep context under Groq TPM limit
+                    # Summarize tool output for conversation history (200 chars max).
+                    # Full JSON is already cached in tool_context for Quality Gate — no data loss.
                     truncated_result = result_text
-                    if len(result_text) > 600:
-                        truncated_result = result_text[:600] + "\n...[truncated for token efficiency]"
+                    if len(result_text) > 200:
+                        truncated_result = result_text[:200] + "…[see tool_context for full data]"
 
                     # Append tool response
                     self.messages.append(
@@ -1118,73 +1064,41 @@ class PlanPilotAgent:
                     )
 
             # --- REFLECTION PASS ---
-            if status_callback:
-                await status_callback("Performing self-reflection & quality gate review...")
-
-            # Extract tool outputs *only* from the current turn
-            current_turn_tool_outputs = []
-            for msg in self.messages[start_msg_count:]:
-                if msg.get("role") == "tool":
-                    current_turn_tool_outputs.append(
-                        f"[{msg.get('name')} output]: {msg.get('content')}"
-                    )
-            tool_outputs_str = "\n".join(current_turn_tool_outputs)
-
             last_answer = self.messages[-1].get("content") or ""
-            if has_travel_plan or reqs.destination != "Destination":
-                ref_sys_prompt = (
-                    "You are a quality assurance reviewer and anti-hallucination engine for PlanPilot AI Travel Planner.\n"
-                    "Review the draft response and output a refined version.\n"
-                    "Ensure the response is accurate, beautifully formatted in clean markdown, and contains NO hallucinations.\n"
-                    "MANDATORY 11-SECTION FORMAT: You MUST output all of these exact 11 markdown headers:\n\n"
-                    "# Destination Overview\n\n"
-                    "# Weather\n\n"
-                    "# How to Reach\n\n"
-                    "# Estimated Budget\n\n"
-                    "# Accommodation Options\n\n"
-                    "# Restaurants\n\n"
-                    "# Upcoming Events\n\n"
-                    "# History of Destination\n\n"
-                    "# Recommended Books\n\n"
-                    "# Suggested Itinerary\n\n"
-                    "# Travel Tips\n\n"
-                    "RULES:\n"
-                    "1. If distance > 2000 km or cross-border, recommend Flights only. DO NOT suggest driving or local trains.\n"
-                    "2. If requested cuisine is specified, recommend ONLY restaurants of that cuisine.\n"
-                    "3. Differentiate Hotel Class (e.g. 3-Star) from Review Rating (e.g. 4.5/5.0 ⭐).\n"
-                    "4. If travel dates are missing, explicitly state that weather values are current/seasonal baseline.\n"
-                    "Do NOT mention reflection or QA in the output."
-                )
+
+            # Skip reflection for simple single-tool queries (weather, books, restaurants, events)
+            # These don't need a quality gate — saves ~1,200-2,000 tokens per simple query
+            if is_single_tool_query or is_general_query:
+                final_answer = last_answer
+                if self.last_metrics is not None:
+                    self.last_metrics["reflection_skipped"] = True
+                logger.debug("Reflection skipped — single-tool or general query")
             else:
-                ref_sys_prompt = (
-                    "You are a quality assurance reviewer and personalisation engine for PlanPilot AI Travel Planner. Review the draft response and output a refined version. "
-                    "Ensure the response is accurate, beautifully formatted in clean markdown, and highly helpful. "
-                    "SINGLE-TOPIC QUERY RULE: The user asked ONLY for a specific item (e.g. only hotels, or only weather, or only restaurants). "
-                    "Answer ONLY that specific topic directly using the provided tool output. "
-                    "Do NOT output empty filler sections (e.g., 'Weather: Unfortunately...', 'Events: Unfortunately...', 'Suggested Itinerary: Unfortunately...') for topics the user did NOT request. "
-                    "Do NOT mention reflection or QA in the output."
+                if status_callback:
+                    await status_callback("Verifying response quality...")
+
+                # Lightweight reflection: send query + draft only (no repeated tool outputs)
+                # Tool data is already embedded in the draft; repeating it wastes 600-1800 tokens
+                ref_sys = _REFLECT_TRAVEL if (has_travel_plan or reqs.destination != "Destination") else _REFLECT_SINGLE
+                reflection_prompt = [
+                    {"role": "system", "content": ref_sys},
+                    {"role": "user", "content": f"Query: {user_query}\n\nDraft:\n{last_answer}"},
+                ]
+
+                # Snapshot metrics before reflection to compute reflection-specific cost
+                pre_ref_in = self.last_metrics["input_tokens"] if self.last_metrics else 0
+                pre_ref_out = self.last_metrics["output_tokens"] if self.last_metrics else 0
+
+                ref_resp = await self._run_sync(
+                    self._call_llm_with_retry, reflection_prompt
                 )
+                final_answer = ref_resp.message.content or last_answer
+                final_answer = re.sub(r"<think>.*?</think>", "", final_answer, flags=re.DOTALL).strip()
 
-            reflection_prompt = [
-                {
-                    "role": "system",
-                    "content": ref_sys_prompt,
-                },
-                {
-                    "role": "user",
-                    "content": (
-                        f"Latest User Query: {user_query}\n\n"
-                        f"Tool Outputs in this turn:\n{tool_outputs_str}\n\n"
-                        f"Draft Response to refine:\n{last_answer}"
-                    ),
-                },
-            ]
-
-            ref_resp = await self._run_sync(
-                self._call_llm_with_retry, reflection_prompt
-            )
-            final_answer = ref_resp.message.content or last_answer
-            final_answer = re.sub(r"<think>.*?</think>", "", final_answer, flags=re.DOTALL).strip()
+                # Record reflection-specific token cost
+                if self.last_metrics is not None:
+                    self.last_metrics["reflection_input_tokens"] = self.last_metrics["input_tokens"] - pre_ref_in
+                    self.last_metrics["reflection_output_tokens"] = self.last_metrics["output_tokens"] - pre_ref_out
 
             # --- POST-GENERATION QUALITY GATE ---
             if has_travel_plan or reqs.destination != "Destination":
@@ -1198,6 +1112,16 @@ class PlanPilotAgent:
 
             if hasattr(self, "last_metrics") and self.last_metrics is not None:
                 self.last_metrics["latency_sec"] = round(time.monotonic() - start_time, 2)
+                logger.info(
+                    f"[Metrics] in={self.last_metrics['input_tokens']} "
+                    f"out={self.last_metrics['output_tokens']} "
+                    f"total={self.last_metrics['total_tokens']} "
+                    f"tools={self.last_metrics['tool_calls']} "
+                    f"reflect_in={self.last_metrics['reflection_input_tokens']} "
+                    f"reflect_out={self.last_metrics['reflection_output_tokens']} "
+                    f"reflect_skipped={self.last_metrics['reflection_skipped']} "
+                    f"latency={self.last_metrics['latency_sec']}s"
+                )
 
             return final_answer
 

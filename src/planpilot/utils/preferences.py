@@ -151,3 +151,31 @@ def build_preference_context(prefs: dict[str, Any] | None = None) -> str:
         return ""
     return "Stored User Preferences JSON Profile:\n" + "\n".join(parts)
 
+
+def build_compact_preference_context(prefs: dict[str, Any] | None = None) -> str:
+    """Build a token-efficient single-line key=value preference summary (~30 tokens).
+
+    Example output:
+      [Prefs] home=Indore budget=mid-range cuisine=Vegetarian goal=Explore
+    """
+    if prefs is None:
+        prefs = load_preferences()
+
+    kv: list[str] = []
+    if prefs.get("home_city"):
+        kv.append(f"home={prefs['home_city']}")
+    if prefs.get("preferred_budget") and prefs["preferred_budget"] != "any":
+        kv.append(f"budget={prefs['preferred_budget']}")
+    if prefs.get("custom_notes"):
+        kv.append(f"notes={prefs['custom_notes'].strip()}")
+    if prefs.get("weekend_goal") and prefs["weekend_goal"] != "Explore":
+        kv.append(f"goal={prefs['weekend_goal']}")
+    if prefs.get("interests"):
+        kv.append(f"likes={','.join(prefs['interests'][:3])}")
+    if prefs.get("dislikes"):
+        kv.append(f"dislikes={','.join(prefs['dislikes'][:2])}")
+
+    if not kv:
+        return ""
+    return "[Prefs] " + " ".join(kv)
+

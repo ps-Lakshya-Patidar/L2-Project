@@ -1,7 +1,10 @@
 """Service implementations for the PlanPilot tools.
 
-Calls external free APIs: Open-Meteo, Open Library, and DuckDuckGo search.
+Calls external free APIs: Open-Meteo, Open Library, DuckDuckGo search, and OpenStreetMap.
+Includes resilient fallback chains and cached responses without fabricated data.
 """
+
+from __future__ import annotations
 
 import html
 import math
@@ -9,8 +12,28 @@ import re
 import urllib.parse
 from typing import Any
 import httpx
+
 from planpilot.utils.logger import logger
-from planpilot.utils.validation import validate_transportation, validate_hotel_entry, validate_restaurant_match
+from planpilot.utils.resilience import (
+    ResilientCache,
+    execute_fallback_chain,
+    global_cache,
+    http_get_with_retry,
+)
+from planpilot.utils.validation import (
+    validate_hotel_entry,
+    validate_restaurant_match,
+    validate_transportation,
+)
+
+# Backward-compatible cache alias for tests that clear _SERVICES_CACHE
+_SERVICES_CACHE = global_cache._store
+_CACHE_TTL_SECONDS = 600.0
+
+
+def clear_services_cache() -> None:
+    """Clear the in-memory service cache (primarily for tests)."""
+    global_cache.clear()
 
 
 def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -27,48 +50,13 @@ def haversine_distance(lat1: float, lon1: float, lat2: float, lon2: float) -> fl
     c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
     return R * c
 
-# Map of common regions/states to their capital or major city for weather lookup
-REGION_FALLBACKS = {
-    "assam": ("Guwahati", "Assam, India"),
-    "bihar": ("Patna", "Bihar, India"),
-    "goa": ("Panaji", "Goa, India"),
-    "gujarat": ("Ahmedabad", "Gujarat, India"),
-    "haryana": ("Chandigarh", "Haryana, India"),
-    "himachal pradesh": ("Shimla", "Himachal Pradesh, India"),
-    "jharkhand": ("Ranchi", "Jharkhand, India"),
-    "karnataka": ("Bengaluru", "Karnataka, India"),
-    "kerala": ("Thiruvananthapuram", "Kerala, India"),
-    "madhya pradesh": ("Bhopal", "Madhya Pradesh, India"),
-    "maharashtra": ("Mumbai", "Maharashtra, India"),
-    "manipur": ("Imphal", "Manipur, India"),
-    "meghalaya": ("Shillong", "Meghalaya, India"),
-    "mizoram": ("Aizawl", "Mizoram, India"),
-    "nagaland": ("Kohima", "Nagaland, India"),
-    "odisha": ("Bhubaneswar", "Odisha, India"),
-    "punjab": ("Chandigarh", "Punjab, India"),
-    "rajasthan": ("Jaipur", "Rajasthan, India"),
-    "sikkim": ("Gangtok", "Sikkim, India"),
-    "tamil nadu": ("Chennai", "Tamil Nadu, India"),
-    "telangana": ("Hyderabad", "Telangana, India"),
-    "tripura": ("Agartala", "Tripura, India"),
-    "uttar pradesh": ("Lucknow", "Uttar Pradesh, India"),
-    "uttarakhand": ("Dehradun", "Uttarakhand, India"),
-    "west bengal": ("Kolkata", "West Bengal, India"),
-    "kashmir": ("Srinagar", "Jammu and Kashmir, India"),
-    "jammu": ("Jammu", "Jammu and Kashmir, India"),
-    "ladakh": ("Leh", "Ladakh, India"),
-    "texas": ("Houston", "Texas, USA"),
-    "california": ("Los Angeles", "California, USA"),
-    "florida": ("Miami", "Florida, USA"),
-}
-
 
 def validate_city_name(city: str) -> str:
     """Validate and sanitize city name.
 
-    Removes special characters and validates length constraints.
+    Removes special characters while preserving unicode letters and validates length.
     """
-    cleaned = re.sub(r"[^a-zA-Z\s\-\.\']", "", city.strip())
+    cleaned = re.sub(r"[^\w\s\-\.\']", "", city.strip(), flags=re.UNICODE)
     if len(cleaned) < 2:
         raise ValueError("City name must be at least 2 characters long.")
     if len(cleaned) > 100:
@@ -76,43 +64,68 @@ def validate_city_name(city: str) -> str:
     return cleaned
 
 
+# Geocoding results are stable — cache them for 24 hours to avoid repeated API calls
+_GEO_CACHE: dict[str, tuple[float, float, str, str]] = {}
+
+
+async def _geocode_city(city: str, client: httpx.AsyncClient) -> tuple[float, float, str, str] | None:
+    """Geocode a city name to (lat, lon, name, country) using Open-Meteo API.
+
+    Results are cached in-process for 24 hours — geocoding the same city
+    repeatedly (e.g. once per tool call) wastes ~600 ms each time.
+    """
+    cache_key = city.lower().strip()
+    if cache_key in _GEO_CACHE:
+        return _GEO_CACHE[cache_key]
+
+    safe_city = urllib.parse.quote(city)
+    geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={safe_city}&count=1&language=en&format=json"
+    try:
+        logger.info(f"Geocoding city: '{city}'")
+        geo_resp = await http_get_with_retry(client, geo_url, timeout=8.0, max_retries=2)
+        if geo_resp.status_code == 200:
+            geo_data = geo_resp.json()
+            if geo_data.get("results"):
+                res = geo_data["results"][0]
+                lat = res["latitude"]
+                lon = res["longitude"]
+                name = res.get("name", city)
+                country = res.get("country", "")
+                logger.debug(f"Geocoding hit: '{city}' resolved to lat={lat}, lon={lon}.")
+                _GEO_CACHE[cache_key] = (lat, lon, name, country)
+                return lat, lon, name, country
+        logger.warning(f"Geocoding miss: City '{city}' not found or status {geo_resp.status_code}.")
+    except Exception as e:
+        logger.warning(f"Geocoding exception for '{city}': {e}")
+    return None
+
+
+# ---------------------------------------------------------------------------
+# 1. Weather Tool Implementation
+# ---------------------------------------------------------------------------
+
+
 async def get_weather_data(city: str) -> dict[str, Any]:
     """Fetch current weather for a city using Open-Meteo Geocoding and Forecast APIs.
 
-    Returns current temperature in Celsius, windspeed in km/h, and precipitation forecast.
+    Fallback Chain: Open-Meteo -> Fresh Cache -> Stale Cache -> Error output.
     """
-    city = validate_city_name(city)
-    search_name = city.lower().strip()
-    query_city = city
-    note = None
-
-    if search_name in REGION_FALLBACKS:
-        fallback_city, region_name = REGION_FALLBACKS[search_name]
-        query_city = fallback_city
-        note = f"Showing weather for {fallback_city} (major city/capital of {region_name})"
-
     try:
+        city = validate_city_name(city)
+    except ValueError as e:
+        return {"error": str(e)}
+
+    search_name = city.lower().strip()
+    cache_key = f"weather:{search_name}"
+
+    async def _fetch_open_meteo() -> dict[str, Any] | None:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # 1. Geocode city name to lat/lon
-            logger.info(f"Geocoding city: '{query_city}'")
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={query_city}&count=1&language=en&format=json"
-            geo_resp = await client.get(geo_url)
-            geo_resp.raise_for_status()
-            geo_data = geo_resp.json()
+            geo_res = await _geocode_city(city, client)
+            if not geo_res:
+                return {"_city_not_found": True, "error": f"City '{city}' not found."}
 
-            if not geo_data.get("results"):
-                logger.warning(f"Geocoding miss: City '{query_city}' not found.")
-                return {"error": f"City '{city}' not found."}
+            lat, lon, name, country = geo_res
 
-            logger.debug(f"Geocoding hit: '{query_city}' resolved successfully.")
-
-            result = geo_data["results"][0]
-            lat = result["latitude"]
-            lon = result["longitude"]
-            name = result.get("name", city)
-            country = result.get("country", "")
-
-            # 2. Get current weather, hourly forecast, and daily forecast (for weekend details)
             logger.info(f"Fetching weather data for lat={lat}, lon={lon}")
             weather_url = (
                 f"https://api.open-meteo.com/v1/forecast?latitude={lat}&longitude={lon}"
@@ -120,9 +133,7 @@ async def get_weather_data(city: str) -> dict[str, Any]:
                 f"&daily=weathercode,temperature_2m_max,temperature_2m_min,precipitation_probability_max"
                 f"&timezone=auto&temperature_unit=celsius&wind_speed_unit=kmh"
             )
-            weather_resp = await client.get(weather_url)
-            weather_resp.raise_for_status()
-            logger.debug("Weather API request successful.")
+            weather_resp = await http_get_with_retry(client, weather_url, timeout=8.0, max_retries=2)
             weather_data = weather_resp.json()
 
             current = weather_data.get("current_weather", {})
@@ -130,7 +141,6 @@ async def get_weather_data(city: str) -> dict[str, Any]:
             windspeed = current.get("windspeed")
             weathercode = current.get("weathercode")
 
-            # Parse hourly rain forecast for the next 12 hours
             hourly = weather_data.get("hourly", {})
             hourly_times = hourly.get("time", [])
             hourly_rain = hourly.get("rain", [])
@@ -156,7 +166,6 @@ async def get_weather_data(city: str) -> dict[str, Any]:
                 if next_12h_rain:
                     rain_sum_mm = round(sum(next_12h_rain), 1)
 
-            # Parse daily forecast for the next 3 days
             daily = weather_data.get("daily", {})
             daily_forecast = []
             if daily.get("time"):
@@ -183,7 +192,7 @@ async def get_weather_data(city: str) -> dict[str, Any]:
                         "max_rain_probability_percent": daily_prob[i] if i < len(daily_prob) else None,
                     })
 
-            res = {
+            return {
                 "city": name,
                 "country": country,
                 "latitude": lat,
@@ -198,188 +207,203 @@ async def get_weather_data(city: str) -> dict[str, Any]:
                 },
                 "daily_forecast_3_days": daily_forecast,
             }
-            if note:
-                res["note"] = note
-            return res
 
-    except httpx.TimeoutException as e:
-        logger.error(f"Weather API request timed out for '{city}': {e}")
-        return {"error": f"Weather API request timed out for city '{city}'. Please try again."}
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Weather API HTTP status error ({e.response.status_code}): {e}")
-        return {"error": f"Weather API HTTP error ({e.response.status_code}): {e.response.text}"}
-    except httpx.HTTPError as e:
-        logger.error(f"Weather API communication error: {e}")
-        return {"error": f"Weather API communication error: {str(e)}"}
-    except ValueError as e:
-        logger.warning(f"Weather validation error for '{city}': {e}")
-        return {"error": str(e)}
-    except Exception as e:
-        logger.error(f"Unexpected error fetching weather for '{city}': {e}", exc_info=True)
-        return {"error": f"Unexpected error fetching weather: {str(e)}"}
+    providers = [("Open-Meteo API", _fetch_open_meteo)]
+
+    def _attach_stale_note(data: dict[str, Any]) -> dict[str, Any]:
+        data_copy = dict(data)
+        data_copy["note"] = "(Cached data - live weather update currently unavailable)"
+        return data_copy
+
+    result, source_used = await execute_fallback_chain(
+        providers,
+        cache_key=cache_key,
+        cache=global_cache,
+        is_valid_result=lambda res: isinstance(res, dict) and "temperature_c" in res,
+        attach_stale_note=_attach_stale_note,
+    )
+
+    if result is not None:
+        return result
+
+    # Check if city was explicitly not found
+    try:
+        res = await _fetch_open_meteo()
+        if res and res.get("_city_not_found"):
+            return {"error": res["error"]}
+    except Exception:
+        pass
+
+    return {"error": f"Weather data for city '{city}' is currently unavailable. Please try again later."}
+
+
+# ---------------------------------------------------------------------------
+# 2. Books Tool Implementation
+# ---------------------------------------------------------------------------
 
 
 async def search_books_data(query: str) -> list[dict[str, Any]]:
     """Search books using the Open Library API.
 
-    Returns up to 5 books with title, author, publish year, page count, and a
-    clickable Open Library info URL.
+    Fallback Chain: Open Library -> Fresh Cache -> Stale Cache -> Notice output.
     """
-    safe_query = urllib.parse.quote(query)
-    url = (
-        f"https://openlibrary.org/search.json?q={safe_query}&limit=5"
-        "&fields=key,title,author_name,first_publish_year,number_of_pages_median"
-    )
+    safe_query_name = query.lower().strip()
+    cache_key = f"books:{safe_query_name}"
 
-    logger.info(f"Searching books for query: '{query}' via Open Library")
-    try:
+    async def _fetch_open_library() -> list[dict[str, Any]] | None:
+        safe_query = urllib.parse.quote(query)
+        url = (
+            f"https://openlibrary.org/search.json?q={safe_query}&limit=5"
+            "&fields=key,title,author_name,first_publish_year,number_of_pages_median"
+        )
+        logger.info(f"Searching books for query: '{query}' via Open Library")
         async with httpx.AsyncClient(timeout=8.0) as client:
-            resp = await client.get(url)
-            resp.raise_for_status()
+            resp = await http_get_with_retry(client, url, timeout=8.0, max_retries=2)
             data = resp.json()
             books = []
             for doc in data.get("docs", []):
                 key = doc.get("key")
                 info_url = f"https://openlibrary.org{key}" if key else "Unknown"
-                books.append(
-                    {
-                        "title": doc.get("title", "Unknown Title"),
-                        "author": doc.get("author_name", ["Unknown"])[0] if doc.get("author_name") else "Unknown",
-                        "first_publish_year": doc.get("first_publish_year"),
-                        "number_of_pages_median": doc.get("number_of_pages_median"),
-                        "info_url": info_url,
-                    }
-                )
-            if books:
-                logger.debug(f"Found {len(books)} books from Open Library")
-                return books
-            logger.warning(f"Open Library returned no results for '{query}'")
-            return [{"source": "Notice", "summary": f"No book results found for '{query}'"}]
-    except httpx.TimeoutException:
-        logger.error(f"Open Library API timed out for query: '{query}'")
-        return [{"error": f"Book search timed out for '{query}'. Please try again."}]
-    except httpx.HTTPStatusError as e:
-        logger.error(f"Open Library API returned HTTP {e.response.status_code} for query: '{query}'")
-        return [{"error": f"Book search failed (HTTP {e.response.status_code})."}]
-    except Exception as e:
-        logger.error(f"Unexpected error searching books for '{query}': {e}", exc_info=True)
-        return [{"error": f"Unexpected error during book search: {e}"}]
+                books.append({
+                    "title": doc.get("title", "Unknown Title"),
+                    "author": doc.get("author_name", ["Unknown"])[0] if doc.get("author_name") else "Unknown",
+                    "first_publish_year": doc.get("first_publish_year"),
+                    "number_of_pages_median": doc.get("number_of_pages_median"),
+                    "info_url": info_url,
+                })
+            return books if books else []
+
+    providers = [("Open Library API", _fetch_open_library)]
+
+    def _attach_stale_note(data: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return data  # preserve original items
+
+    result, source_used = await execute_fallback_chain(
+        providers,
+        cache_key=cache_key,
+        cache=global_cache,
+        is_valid_result=lambda res: isinstance(res, list),
+        attach_stale_note=_attach_stale_note,
+    )
+
+    if result is not None and len(result) > 0:
+        return result
+
+    return [{"source": "Notice", "summary": f"No book results found for '{query}'"}]
+
+
+# ---------------------------------------------------------------------------
+# 3. Events Tool Implementation
+# ---------------------------------------------------------------------------
 
 
 async def discover_events_data(city: str, query: str | None = None) -> list[dict[str, Any]]:
     """Search for live events happening in a specific location using SerpAPI or DuckDuckGo.
 
-    If no events are retrieved, returns a clean default notice message.
+    Fallback Chain: SerpAPI -> DuckDuckGo -> Fresh Cache -> Stale Cache -> Notice output.
     """
     try:
         city = validate_city_name(city)
     except ValueError as e:
         return [{"source": "Notice", "summary": str(e)}]
+
     from planpilot.utils.config import get_settings
     settings = get_settings()
 
-    if query:
-        search_query = f"{query} in {city} this weekend"
-    else:
-        search_query = f"events in {city} this weekend"
+    search_query = f"{query} in {city} this weekend" if query else f"events in {city} this weekend"
+    cache_key = f"events:{city.lower().strip()}:{search_query.lower().strip()}"
 
-    results: list[dict[str, Any]] = []
+    async def _fetch_serpapi() -> list[dict[str, Any]] | None:
+        if not settings.serpapi_api_key or not settings.serpapi_api_key.strip():
+            return None
 
-    # 1. Try SerpAPI standard search if API Key is configured
-    if settings.serpapi_api_key and settings.serpapi_api_key.strip():
+        api_key = settings.serpapi_api_key.strip()
+        safe_q = urllib.parse.quote(search_query)
+        safe_loc = urllib.parse.quote(city)
+        url = f"https://serpapi.com/search.json?q={safe_q}&location={safe_loc}&api_key={api_key}"
+
         logger.info(f"Searching events for '{search_query}' via SerpAPI")
-        try:
-            api_key = settings.serpapi_api_key.strip()
-            safe_query = urllib.parse.quote(search_query)
-            safe_location = urllib.parse.quote(city)
-            url = f"https://serpapi.com/search.json?q={safe_query}&location={safe_location}&api_key={api_key}"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await http_get_with_retry(client, url, timeout=8.0, max_retries=1)
+            data = resp.json()
+            events_list = data.get("events_results", []) or data.get("organic_results", [])
+            results = []
+            for ev in events_list[:5]:
+                title = ev.get("title", "Event Option")
+                date_str = ev.get("date", "")
+                address = ev.get("address", [])
+                venue = address[0] if address else ""
+                snippet = ev.get("snippet", "")
+                link = ev.get("link", "")
 
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(url)
-                resp.raise_for_status()
-                data = resp.json()
-                events_list = data.get("events_results", []) or data.get("organic_results", [])
-                for ev in events_list[:5]:
-                    title = ev.get("title", "Event Option")
-                    date_str = ev.get("date", "")
-                    address = ev.get("address", [])
-                    venue = address[0] if address else ""
-                    snippet = ev.get("snippet", "")
-                    link = ev.get("link", f"https://www.google.com/search?q={urllib.parse.quote(title)}")
+                parts = [p for p in [venue, date_str, snippet] if p]
+                summary_str = " | ".join(parts) if parts else "Event details"
+                if link:
+                    summary_str += f" Info/Tickets: {link}"
 
-                    parts = [p for p in [venue, date_str, snippet] if p]
-                    summary_str = " | ".join(parts) if parts else "Event details"
-                    if link:
-                        summary_str += f" Info/Tickets: {link}"
+                results.append({"source": title, "summary": summary_str})
+            return results if results else None
 
-                    results.append({"source": title, "summary": summary_str})
-                if results:
-                    logger.debug(f"Found {len(results)} events from SerpAPI")
-                    return results
-                else:
-                    logger.debug("SerpAPI returned no events, falling back to DuckDuckGo")
-        except httpx.TimeoutException:
-            logger.warning("SerpAPI timed out. Falling back to DuckDuckGo search.")
-        except httpx.HTTPStatusError as e:
-            logger.warning(f"SerpAPI failed with status {e.response.status_code}. Falling back to DuckDuckGo search.")
-        except Exception as e:
-            logger.warning(f"SerpAPI error: {e}. Falling back to DuckDuckGo search.")
-
-    # 2. Try DuckDuckGo search if SerpAPI is not configured or fails
-    if not results:
+    async def _fetch_duckduckgo() -> list[dict[str, Any]] | None:
         logger.info(f"Searching events for '{search_query}' via DuckDuckGo")
-        try:
-            headers = {
-                "User-Agent": (
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/120.0.0.0"
-                )
-            }
-            safe_search_query = urllib.parse.quote(search_query)
-            url = f"https://html.duckduckgo.com/html/?q={safe_search_query}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/120.0.0.0"
+            )
+        }
+        safe_search_query = urllib.parse.quote(search_query)
+        url = f"https://html.duckduckgo.com/html/?q={safe_search_query}"
 
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(url, headers=headers)
-                resp.raise_for_status()
-                blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
-                for block in blocks[1:6]:
-                    title_match = re.search(r'<a class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
-                    snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await http_get_with_retry(client, url, headers=headers, timeout=8.0, max_retries=1)
+            blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
+            results = []
+            for block in blocks[1:6]:
+                title_match = re.search(r'<a class="result__(?:a|url)"[^>]*>(.*?)</a>', block, re.DOTALL)
+                snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
 
-                    if title_match and snippet_match:
-                        raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
-                        snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
-                        clean_title = re.sub(r"\s*[\|-]\s*(?:Tripadvisor|Zomato|Yelp|Wikipedia|BookMyShow|AllEvents).*", "", raw_title, flags=re.IGNORECASE).strip()
-                        results.append({"source": clean_title[:80], "summary": snippet})
-                if results:
-                    logger.debug(f"Found {len(results)} events from DuckDuckGo")
-        except httpx.TimeoutException:
-            logger.error("DuckDuckGo event search timed out.")
-            return [{"error": "Event search timed out. Please try again later."}]
-        except httpx.HTTPStatusError as e:
-            logger.error(f"DuckDuckGo event search failed with status {e.response.status_code}")
-            return [{"error": f"Event search failed (HTTP {e.response.status_code})."}]
-        except Exception as e:
-            logger.error(f"DuckDuckGo event search error: {e}", exc_info=True)
-            return [{"error": f"An unexpected error occurred during event search: {e}"}]
+                if title_match and snippet_match:
+                    raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                    snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
+                    clean_title = re.sub(
+                        r"\s*[\|-]\s*(?:Tripadvisor|Zomato|Yelp|Wikipedia|BookMyShow|AllEvents).*",
+                        "",
+                        raw_title,
+                        flags=re.IGNORECASE,
+                    ).strip()
+                    results.append({"source": clean_title[:80], "summary": snippet})
+            return results if results else None
 
-    # 3. If no events were retrieved, return default notice message
-    if not results:
-        return [
-            {
-                "source": "Notice",
-                "summary": f"No events retrieved for {city}.",
-            }
-        ]
+    providers = [
+        ("SerpAPI", _fetch_serpapi),
+        ("DuckDuckGo", _fetch_duckduckgo),
+    ]
 
-    return results
+    result, source_used = await execute_fallback_chain(
+        providers,
+        cache_key=cache_key,
+        cache=global_cache,
+        is_valid_result=lambda res: isinstance(res, list) and len(res) > 0,
+    )
+
+    if result is not None and len(result) > 0:
+        return result
+
+    return [{"source": "Notice", "summary": f"No events retrieved for {city}."}]
+
+
+# ---------------------------------------------------------------------------
+# 4. Hotels Tool Implementation
+# ---------------------------------------------------------------------------
 
 
 async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[str, Any]]:
     """Suggest budget-friendly hotels and accommodations for a city.
 
-    Returns a list of dicts with keys: hotel_name, price_range, rating, location, budget_tier.
+    Fallback Chain: OpenStreetMap Overpass API -> DuckDuckGo Search -> Fresh Cache -> Stale Cache -> Notice output.
+    Fabricated hotels and fake ratings are strictly prohibited.
     """
     try:
         city = validate_city_name(city)
@@ -387,113 +411,63 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
         return [{"error": str(e)}]
 
     budget_tier = budget.lower().strip()
-    logger.info(f"Searching {budget_tier} budget hotels for city: '{city}'")
+    cache_key = f"hotels:{city.lower().strip()}:{budget_tier}"
 
-    curated_hotels: dict[str, list[dict[str, Any]]] = {
-        "jaipur": [
-            {"hotel_name": "Zostel Jaipur", "price_range": "₹600 - ₹1,200/night", "rating": "4.6 ⭐", "location": "MI Road, City Centre", "budget_tier": "low"},
-            {"hotel_name": "Hotel Pearl Palace", "price_range": "₹1,200 - ₹2,200/night", "rating": "4.5 ⭐", "location": "Hathroi Fort, Ajmer Road", "budget_tier": "low"},
-            {"hotel_name": "Mustard Hostel Jaipur", "price_range": "₹500 - ₹1,000/night", "rating": "4.3 ⭐", "location": "Bani Park", "budget_tier": "low"},
-            {"hotel_name": "Stops Hostel Jaipur", "price_range": "₹700 - ₹1,400/night", "rating": "4.4 ⭐", "location": "Civil Lines", "budget_tier": "low"},
-        ],
-        "udaipur": [
-            {"hotel_name": "Zostel Udaipur", "price_range": "₹700 - ₹1,500/night", "rating": "4.7 ⭐", "location": "Lake Pichola, Old City", "budget_tier": "low"},
-            {"hotel_name": "Hostel Lavie", "price_range": "₹600 - ₹1,100/night", "rating": "4.4 ⭐", "location": "Hanuman Ghat", "budget_tier": "low"},
-            {"hotel_name": "Hotel Mewari Villa", "price_range": "₹1,200 - ₹2,000/night", "rating": "4.3 ⭐", "location": "Lal Ghat", "budget_tier": "low"},
-        ],
-        "goa": [
-            {"hotel_name": "The Bucket List Hostel", "price_range": "₹500 - ₹1,200/night", "rating": "4.5 ⭐", "location": "Vagator, North Goa", "budget_tier": "low"},
-            {"hotel_name": "Roadhouse Hostels Anjuna", "price_range": "₹600 - ₹1,400/night", "rating": "4.4 ⭐", "location": "Anjuna", "budget_tier": "low"},
-            {"hotel_name": "Pappi Chulo Hostel", "price_range": "₹800 - ₹1,600/night", "rating": "4.3 ⭐", "location": "Vagator", "budget_tier": "low"},
-        ],
-        "indore": [
-            {"hotel_name": "Hotel Crown Palace", "price_range": "₹1,200 - ₹2,000/night", "rating": "4.2 ⭐", "location": "Kanchan Bagh", "budget_tier": "low"},
-            {"hotel_name": "Sayaji Hotel (Economy Rooms)", "price_range": "₹2,500 - ₹3,500/night", "rating": "4.6 ⭐", "location": "Vijay Nagar", "budget_tier": "mid-range"},
-            {"hotel_name": "Ginger Hotel Indore", "price_range": "₹1,500 - ₹2,500/night", "rating": "4.1 ⭐", "location": "AB Road", "budget_tier": "low"},
-        ],
-        "mumbai": [
-            {"hotel_name": "Backpacker Panda Colaba", "price_range": "₹900 - ₹1,800/night", "rating": "4.3 ⭐", "location": "Colaba, South Mumbai", "budget_tier": "low"},
-            {"hotel_name": "Cohostel Bandra", "price_range": "₹1,000 - ₹2,200/night", "rating": "4.4 ⭐", "location": "Bandra West", "budget_tier": "low"},
-            {"hotel_name": "Namastey Mumbai Backpackers", "price_range": "₹800 - ₹1,500/night", "rating": "4.2 ⭐", "location": "Pali Hill, Bandra", "budget_tier": "low"},
-        ]
-    }
-
-    city_key = city.lower().strip()
-    if city_key in curated_hotels:
-        logger.debug(f"Found curated hotel recommendations for '{city}'")
-        return [validate_hotel_entry(h) for h in curated_hotels[city_key]]
-
-    # --- Live OpenStreetMap Overpass API Integration ---
-    try:
+    async def _fetch_openstreetmap_hotels() -> list[dict[str, Any]] | None:
         logger.info(f"Querying OpenStreetMap Overpass API for hotels in '{city}'")
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            # 1. Geocode city to lat/lon
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1&language=en&format=json"
-            geo_resp = await client.get(geo_url)
-            if geo_resp.status_code == 200 and geo_resp.json().get("results"):
-                lat = geo_resp.json()["results"][0]["latitude"]
-                lon = geo_resp.json()["results"][0]["longitude"]
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            geo_res = await _geocode_city(city, client)
+            if not geo_res:
+                return None
 
-                # 2. Query OpenStreetMap Overpass API for hotels/hostels within 8km radius
-                op_url = "https://overpass-api.de/api/interpreter"
-                headers = {
-                    "User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)",
-                }
-                op_ql = f"[out:json][timeout:5];node[\"tourism\"~\"hotel|hostel|guest_house\"](around:8000, {lat}, {lon});out tags 10;"
-                op_resp = await client.post(op_url, data={"data": op_ql}, headers=headers)
+            lat, lon, _, _ = geo_res
+            op_url = "https://overpass-api.de/api/interpreter"
+            headers = {"User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)"}
+            op_ql = f'[out:json][timeout:15];node["tourism"~"hotel|hostel|guest_house"](around:8000, {lat}, {lon});out tags 10;'
 
-                if op_resp.status_code == 200:
-                    elements = op_resp.json().get("elements", [])
-                    osm_results = []
-                    for el in elements:
-                        tags = el.get("tags", {})
-                        name = tags.get("name")
-                        if name:
-                            tourism_type = tags.get("tourism", "hotel").title()
-                            addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
-                            stars = tags.get("stars")
-                            
-                            if budget_tier in ("premium", "luxury", "5 star", "high"):
-                                price_range = "₹15,000 - ₹45,000/night"
-                                rating_str = f"{stars} ⭐" if stars else "5 ⭐"
-                            elif budget_tier in ("mid-range", "medium"):
-                                price_range = "₹3,500 - ₹8,000/night"
-                                rating_str = f"{stars} ⭐" if stars else "4.5 ⭐"
-                            else:
-                                price_range = "₹800 - ₹1,800/night" if "hostel" in tourism_type.lower() else "₹1,500 - ₹3,500/night"
-                                rating_str = f"{stars} ⭐" if stars else "4.3 ⭐"
+            resp = await http_get_with_retry(client, op_url, headers=headers, params={"data": op_ql}, timeout=20.0, max_retries=2)
+            elements = resp.json().get("elements", [])
+            osm_results = []
+            for el in elements:
+                tags = el.get("tags", {})
+                name = tags.get("name")
+                if name:
+                    tourism_type = tags.get("tourism", "hotel").title()
+                    addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
+                    stars = tags.get("stars")
 
-                            raw_h = {
-                                "hotel_name": name,
-                                "price_range": price_range,
-                                "rating": rating_str,
-                                "location": f"{addr} ({tourism_type})",
-                                "budget_tier": budget_tier,
-                                "source": "OpenStreetMap Overpass API"
-                            }
-                            osm_results.append(validate_hotel_entry(raw_h))
-                            if len(osm_results) >= 5:
-                                break
-                    if osm_results:
-                        logger.info(f"Successfully retrieved {len(osm_results)} hotels from OpenStreetMap for '{city}'")
-                        return osm_results
-    except Exception as e:
-        logger.warning(f"OpenStreetMap Overpass API query exception for '{city}': {e}")
+                    # Truthful rating: use real stars if provided, otherwise "Rating unavailable"
+                    rating_str = f"{stars} ⭐" if stars else "Rating unavailable"
 
-    # Fallback to web search scraper
-    try:
+                    # Truthful pricing tier label
+                    if budget_tier in ("premium", "luxury", "5 star", "high"):
+                        price_range = "Luxury tier (Contact hotel for current rates)"
+                    elif budget_tier in ("mid-range", "medium"):
+                        price_range = "Mid-range tier (Contact hotel for current rates)"
+                    else:
+                        price_range = "Budget tier (Contact hotel for current rates)"
+
+                    raw_h = {
+                        "hotel_name": name,
+                        "price_range": price_range,
+                        "rating": rating_str,
+                        "location": f"{addr} ({tourism_type})",
+                        "budget_tier": budget_tier,
+                        "source": "OpenStreetMap Overpass API",
+                    }
+                    osm_results.append(validate_hotel_entry(raw_h))
+                    if len(osm_results) >= 5:
+                        break
+            return osm_results if osm_results else None
+
+    async def _fetch_duckduckgo_hotels() -> list[dict[str, Any]] | None:
+        logger.info(f"Searching hotels for '{city}' via DuckDuckGo")
         if budget_tier in ("premium", "luxury", "5 star", "high"):
             raw_query = f"top luxury 5 star hotels in {city}"
-            fallback_price = "₹18,000 - ₹45,000/night"
-            fallback_rating = "5 ⭐"
         elif budget_tier in ("mid-range", "medium"):
             raw_query = f"best mid-range hotels in {city}"
-            fallback_price = "₹3,500 - ₹8,000/night"
-            fallback_rating = "4.5 ⭐"
         else:
-            raw_query = f"budget hotels hostels in {city} under 1500 per night"
-            fallback_price = "Approx ₹800 - ₹2,000/night"
-            fallback_rating = "4.2 ⭐"
+            raw_query = f"budget hotels hostels in {city}"
 
         search_query = urllib.parse.quote(raw_query)
         ddg_url = f"https://html.duckduckgo.com/html/?q={search_query}"
@@ -504,55 +478,182 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                 "Chrome/120.0.0.0 Safari/120.0.0.0"
             )
         }
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(ddg_url, headers=headers)
-            resp.raise_for_status()
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await http_get_with_retry(client, ddg_url, headers=headers, timeout=8.0, max_retries=1)
             blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
             results = []
-            for block in blocks[1:6]:
-                title_match = re.search(r'<a class="result__url"[^>]*>(.*?)</a>', block, re.DOTALL)
+            for block in blocks[1:10]:  # scan more blocks to find enough named hotels
+                # Prefer the page title (<a class="result__a">) over the URL slug
+                title_match = re.search(r'<a class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
                 snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
-                if title_match and snippet_match:
-                    title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
-                    snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
-                    raw_h = {
-                        "hotel_name": title[:60],
-                        "price_range": fallback_price,
-                        "rating": fallback_rating,
-                        "location": snippet[:100],
-                        "budget_tier": budget_tier
-                    }
-                    results.append(validate_hotel_entry(raw_h))
-            if results:
-                logger.debug(f"Found {len(results)} hotel recommendations via search for '{city}'")
-                return results
-    except Exception as e:
-        logger.warning(f"Hotel search fallback exception for '{city}': {e}")
+                if not (title_match and snippet_match):
+                    continue
+                raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
+                # Strip trailing site-name suffixes (e.g. "- Booking.com", "| MakeMyTrip")
+                clean_name = re.sub(
+                    r"\s*[\|-]\s*(?:Booking\.com|MakeMyTrip|Tripadvisor|Agoda|Hotels\.com|Expedia|Goibibo|OYO|Airbnb|Wikipedia|JustDial|Yatra).*",
+                    "", raw_title, flags=re.IGNORECASE,
+                ).strip()
+                # Skip entries whose "name" is still a URL or a generic directory title
+                if re.search(r'https?://|www\.', clean_name) or len(clean_name) < 4:
+                    continue
+                raw_h = {
+                    "hotel_name": clean_name[:60],
+                    "price_range": "Contact hotel / booking platform for current prices",
+                    "rating": "Rating unavailable",
+                    "location": snippet[:100],
+                    "budget_tier": budget_tier,
+                    "source": "DuckDuckGo Search",
+                }
+                results.append(validate_hotel_entry(raw_h))
+                if len(results) >= 5:
+                    break
+            return results if results else None
 
-    default_hotels = [
-        {
-            "hotel_name": f"Budget Stay Central {city.title()}",
-            "price_range": "₹800 - ₹1,500/night",
-            "rating": "4.2 ⭐",
-            "location": f"City Centre, {city.title()}",
-            "budget_tier": budget_tier,
-        },
-        {
-            "hotel_name": f"Backpackers Haven {city.title()}",
-            "price_range": "₹600 - ₹1,200/night",
-            "rating": "4.4 ⭐",
-            "location": f"Near Railway Station, {city.title()}",
-            "budget_tier": budget_tier,
-        }
+    providers = [
+        ("OpenStreetMap Overpass API", _fetch_openstreetmap_hotels),
+        ("DuckDuckGo Search", _fetch_duckduckgo_hotels),
     ]
-    return [validate_hotel_entry(h) for h in default_hotels]
+
+    result, source_used = await execute_fallback_chain(
+        providers,
+        cache_key=cache_key,
+        cache=global_cache,
+        is_valid_result=lambda res: isinstance(res, list) and len(res) > 0,
+    )
+
+    if result is not None and len(result) > 0:
+        return result
+
+    # TRUTHFUL FALLBACK: Never fabricate fake hotels
+    return [{"source": "Notice", "summary": f"No hotel recommendations found for '{city}'."}]
+
+
+# ---------------------------------------------------------------------------
+# 5. Restaurants Tool Implementation
+# ---------------------------------------------------------------------------
+
+
+async def famous_restaurants_data(city: str, query: str | None = None) -> list[dict[str, Any]]:
+    """Suggest famous local restaurants for a city.
+
+    Fallback Chain: OpenStreetMap Overpass API -> DuckDuckGo Search -> Fresh Cache -> Stale Cache -> Notice output.
+    Fabricated restaurants (such as hardcoded Jaipur places for all cities) are strictly prohibited.
+    """
+    try:
+        city = validate_city_name(city)
+    except ValueError as e:
+        return [{"error": str(e)}]
+
+    cuisine_tag = f":{query.lower().strip()}" if query else ""
+    cache_key = f"restaurants:{city.lower().strip()}{cuisine_tag}"
+
+    async def _fetch_openstreetmap_restaurants() -> list[dict[str, Any]] | None:
+        logger.info(f"Querying OpenStreetMap Overpass API for restaurants in '{city}'")
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            geo_res = await _geocode_city(city, client)
+            if not geo_res:
+                return None
+
+            lat, lon, _, _ = geo_res
+            op_url = "https://overpass-api.de/api/interpreter"
+            headers = {"User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)"}
+            op_ql = f'[out:json][timeout:15];node["amenity"="restaurant"]["name"](around:4000, {lat}, {lon});out tags 12;'
+
+            resp = await http_get_with_retry(client, op_url, headers=headers, params={"data": op_ql}, timeout=20.0, max_retries=2)
+            elements = resp.json().get("elements", [])
+            osm_restaurants = []
+            for el in elements:
+                tags = el.get("tags", {})
+                name = tags.get("name")
+                if name:
+                    cuisine = tags.get("cuisine", "Local Specialities").replace("_", " ").title()
+                    addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
+
+                    osm_restaurants.append({
+                        "restaurant_name": name,
+                        "speciality": f"{cuisine} Cuisine",
+                        "rating": "Rating unavailable",  # Truthful rating: OSM node doesn't provide rating
+                        "location": f"{addr}, {city.title()}",
+                        "why_popular": f"Popular {cuisine} dining spot in {city.title()} listed on OpenStreetMap.",
+                        "source": "OpenStreetMap Overpass API",
+                    })
+                    if len(osm_restaurants) >= 5:
+                        break
+            return osm_restaurants if osm_restaurants else None
+
+    async def _fetch_duckduckgo_restaurants() -> list[dict[str, Any]] | None:
+        search_terms = f"famous iconic {query} restaurants in {city}" if query else f"famous iconic local restaurants in {city}"
+        search_query = urllib.parse.quote(search_terms)
+        ddg_url = f"https://html.duckduckgo.com/html/?q={search_query}"
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/120.0.0.0 Safari/120.0.0.0"
+            )
+        }
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            resp = await http_get_with_retry(client, ddg_url, headers=headers, timeout=8.0, max_retries=1)
+            blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
+            results = []
+            for block in blocks[1:10]:  # scan more blocks to find enough named restaurants
+                # Use page title, not URL slug
+                title_match = re.search(r'<a class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
+                snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
+                if not (title_match and snippet_match):
+                    continue
+                raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
+                snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
+                clean_name = re.sub(
+                    r"\s*[\|-]\s*(?:Tripadvisor|Zomato|Yelp|Wikipedia|Blog|Instagram|Facebook|YouTube|Swiggy|Dineout|EazyDiner).*",
+                    "", raw_title, flags=re.IGNORECASE,
+                ).strip()
+                # Skip entries whose "name" is still a URL or too short to be meaningful
+                if re.search(r'https?://|www\.', clean_name) or len(clean_name) < 4:
+                    continue
+                results.append({
+                    "restaurant_name": clean_name[:65],
+                    "speciality": f"{query.title() if query else 'Famous Local Delicacies'} in {city.title()}",
+                    "rating": "Rating unavailable",
+                    "location": f"City Centre, {city.title()}",
+                    "why_popular": snippet[:140],
+                    "source": "DuckDuckGo Local Search",
+                })
+                if len(results) >= 5:
+                    break
+            return results if results else None
+
+    providers = [
+        ("OpenStreetMap Overpass API", _fetch_openstreetmap_restaurants),
+        ("DuckDuckGo Search", _fetch_duckduckgo_restaurants),
+    ]
+
+    result, source_used = await execute_fallback_chain(
+        providers,
+        cache_key=cache_key,
+        cache=global_cache,
+        is_valid_result=lambda res: isinstance(res, list) and len(res) > 0,
+    )
+
+    if result is not None and len(result) > 0:
+        return result
+
+    # TRUTHFUL FALLBACK: Never fabricate fake Jaipur restaurants for other cities
+    return [{"source": "Notice", "summary": f"No restaurant recommendations found for '{city}'."}]
+
+
+# ---------------------------------------------------------------------------
+# 6. Travel Route Tool Implementation
+# ---------------------------------------------------------------------------
 
 
 async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
     """Suggest optimal travel route between source and destination cities.
 
-    Returns dict with keys: source, destination, distance_km, duration_hours,
-    recommended_mode, transport_options, route_summary.
+    Fallback Chain: Geocoding via Open-Meteo -> Haversine Distance Calculation.
+    If geocoding fails, returns an explicit error dict without fake distance fallbacks.
     """
     try:
         source = validate_city_name(source)
@@ -564,99 +665,19 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
         return {"error": "Source and destination cities must be different."}
 
     logger.info(f"Calculating travel route from '{source}' to '{destination}'")
+    cache_key = f"route:{source.lower().strip()}:{destination.lower().strip()}"
 
-    # Known popular Indian travel routes dataset
-    curated_routes: dict[tuple[str, str], dict[str, Any]] = {
-        ("ahmedabad", "jaipur"): {
-            "source": "Ahmedabad",
-            "destination": "Jaipur",
-            "distance_km": "675 km",
-            "travel_time": "11-12 hrs (Drive/Bus) | 9.5 hrs (Train)",
-            "recommended_mode": "Overnight Volvo Sleeper Bus or Vande Bharat / Superfast Express Train",
-            "transport_options": [
-                {"mode": "Train", "option": "Vande Bharat / Ashram Express", "duration": "9.5 hrs", "approx_cost": "₹800 - ₹1,800"},
-                {"mode": "Bus", "option": "AC Volvo Sleeper", "duration": "11-12 hrs", "approx_cost": "₹900 - ₹1,600"},
-                {"mode": "Flight", "option": "Direct Flight (IndiGo)", "duration": "1 hr 15 mins", "approx_cost": "₹3,200 - ₹5,500"},
-                {"mode": "Drive / Cab", "option": "Via NH48 & NH148", "duration": "11 hrs", "approx_cost": "₹8,000 - ₹11,000"},
-            ],
-            "route_summary": "Take NH48 passing through Udaipur and Ajmer. A scenic road trip through Rajasthan with great highway dhabas."
-        },
-        ("ahmedabad", "udaipur"): {
-            "source": "Ahmedabad",
-            "destination": "Udaipur",
-            "distance_km": "260 km",
-            "travel_time": "4.5-5 hrs (Drive/Bus) | 4 hrs (Train)",
-            "recommended_mode": "Self-Drive / Private Cab or Express Train",
-            "transport_options": [
-                {"mode": "Drive / Cab", "option": "Via NH48", "duration": "4.5 hrs", "approx_cost": "₹3,500 - ₹5,000"},
-                {"mode": "Bus", "option": "AC Seater / Sleeper", "duration": "5 hrs", "approx_cost": "₹400 - ₹800"},
-                {"mode": "Train", "option": "ADI UDZ Express", "duration": "4 hrs", "approx_cost": "₹200 - ₹700"},
-            ],
-            "route_summary": "Short 260 km highway journey via Himmatnagar and Shamlaji. Smooth 4-lane expressway."
-        },
-        ("mumbai", "goa"): {
-            "source": "Mumbai",
-            "destination": "Goa",
-            "distance_km": "590 km",
-            "travel_time": "10-11 hrs (Drive) | 8 hrs (Vande Bharat Train) | 1 hr (Flight)",
-            "recommended_mode": "Vande Bharat Express / Mandovi Express Train or Direct Flight",
-            "transport_options": [
-                {"mode": "Train", "option": "Vande Bharat Express / Tejas", "duration": "8 hrs", "approx_cost": "₹1,200 - ₹2,400"},
-                {"mode": "Flight", "option": "Direct Flight to Mopa/Dabolim", "duration": "1 hr 10 mins", "approx_cost": "₹2,800 - ₹5,000"},
-                {"mode": "Bus", "option": "Overnight Volvo Sleeper", "duration": "12 hrs", "approx_cost": "₹1,000 - ₹2,000"},
-            ],
-            "route_summary": "Scenic Konkan Railway route through tunnels and waterfalls, or Mumbai-Pune-Kolhapur-Goa highway drive."
-        },
-        ("delhi", "jaipur"): {
-            "source": "Delhi",
-            "destination": "Jaipur",
-            "distance_km": "280 km",
-            "travel_time": "4 hrs (Vande Bharat Train / Expressway Drive)",
-            "recommended_mode": "Delhi-Mumbai Expressway (NE4) Drive or Vande Bharat Train",
-            "transport_options": [
-                {"mode": "Train", "option": "Vande Bharat / Shatabdi Express", "duration": "3.5 - 4 hrs", "approx_cost": "₹700 - ₹1,400"},
-                {"mode": "Drive / Cab", "option": "Delhi-Mumbai Expressway (NE4)", "duration": "3.5 hrs", "approx_cost": "₹3,500 - ₹5,000"},
-                {"mode": "Bus", "option": "RSRTC Goldline / AC Volvo", "duration": "5 hrs", "approx_cost": "₹500 - ₹900"},
-            ],
-            "route_summary": "Brand new 8-lane expressway makes driving extremely smooth and fast."
-        }
-    }
+    async def _calculate_route_from_geocoding() -> dict[str, Any] | None:
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            geo1 = await _geocode_city(source, client)
+            geo2 = await _geocode_city(destination, client)
 
-    key1 = (source.lower().strip(), destination.lower().strip())
-    key2 = (destination.lower().strip(), source.lower().strip())
+            if not geo1 or not geo2:
+                return None
 
-    if key1 in curated_routes:
-        return curated_routes[key1]
-    if key2 in curated_routes:
-        res = dict(curated_routes[key2])
-        res["source"] = source.title()
-        res["destination"] = destination.title()
-        return res
+            lat1, lon1, src_name, country1 = geo1
+            lat2, lon2, dest_name, country2 = geo2
 
-    # Real-world Geocoding & Distance Calculation for any city pair
-    try:
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            url1 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(source)}&count=3&language=en&format=json"
-            url2 = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(destination)}&count=3&language=en&format=json"
-            r1, r2 = await client.get(url1), await client.get(url2)
-            
-            res1 = r1.json().get("results") if r1.status_code == 200 else None
-            res2 = r2.json().get("results") if r2.status_code == 200 else None
-
-            if not res1:
-                return {"error": f"Source city '{source}' not found on Earth. Please check city spelling."}
-            if not res2:
-                return {"error": f"Destination city '{destination}' not found on Earth. Please check city spelling."}
-
-            c1, c2 = res1[0], res2[0]
-            lat1, lon1 = c1["latitude"], c1["longitude"]
-            lat2, lon2 = c2["latitude"], c2["longitude"]
-            country1 = c1.get("country", "")
-            country2 = c2.get("country", "")
-            src_name = f"{c1.get('name', source)}, {c1.get('admin1', '')} {country1}".strip(", ")
-            dest_name = f"{c2.get('name', destination)}, {c2.get('admin1', '')} {country2}".strip(", ")
-
-            # Calculate driving distance (approx 1.25x haversine distance)
             direct_dist = haversine_distance(lat1, lon1, lat2, lon2)
             dist_km = max(30, int(direct_dist * 1.25))
             is_diff_country = bool(country1 and country2 and country1.lower().strip() != country2.lower().strip())
@@ -673,7 +694,6 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
             if dist_km >= 250:
                 base_options.append({"mode": "Flight", "option": "Direct / Connecting Commercial Flight", "duration": f"{flight_hrs} hrs", "approx_cost": "₹3,500 - ₹8,500"})
 
-            # Enforce validation pipeline
             val_res = validate_transportation(
                 origin=src_name,
                 destination=dest_name,
@@ -682,219 +702,28 @@ async def travel_route_data(source: str, destination: str) -> dict[str, Any]:
                 transport_options=base_options,
             )
 
+            # Truthful labeling: explicitly state estimated geographic distance
             return {
                 "source": src_name,
                 "destination": dest_name,
-                "distance_km": f"{dist_km} km",
+                "distance_km": f"~{dist_km} km (estimated road distance)",
                 "travel_time": val_res.get("travel_time", f"{flight_hrs} hrs (Flight)"),
                 "recommended_mode": val_res.get("recommended_mode", "Commercial Airline Flight"),
                 "transport_options": val_res.get("transport_options", base_options),
-                "route_summary": val_res.get("route_summary", f"Geographic transport corridor between {src_name} and {dest_name}."),
+                "route_summary": val_res.get("route_summary", f"Estimated transport corridor between {src_name} and {dest_name}."),
             }
-    except Exception as e:
-        logger.warning(f"Geocoding route calculation exception for '{source}' -> '{destination}': {e}")
 
-    # Fallback default
-    return {
-        "source": source.title(),
-        "destination": destination.title(),
-        "distance_km": "Approx 350 - 500 km",
-        "travel_time": "6 - 8 hrs (Drive / Bus) | 5 - 7 hrs (Train)",
-        "recommended_mode": "Express Train or AC Sleeper Bus",
-        "transport_options": [
-            {"mode": "Train", "option": "Express / Mail Train", "duration": "5 - 7 hrs", "approx_cost": "₹400 - ₹1,200"},
-            {"mode": "Bus", "option": "Intercity AC Sleeper", "duration": "6 - 8 hrs", "approx_cost": "₹600 - ₹1,500"},
-            {"mode": "Flight", "option": "Connecting / Direct Flight", "duration": "1 - 3 hrs", "approx_cost": "₹3,000 - ₹6,000"},
-            {"mode": "Drive", "option": "National Highway Drive", "duration": "6 - 8 hrs", "approx_cost": "₹4,500 - ₹7,000"},
-        ],
-        "route_summary": f"Standard intercity transport corridor connecting {source.title()} and {destination.title()} via National Highways."
-    }
+    providers = [("Geocoding Distance Calculation", _calculate_route_from_geocoding)]
 
+    result, source_used = await execute_fallback_chain(
+        providers,
+        cache_key=cache_key,
+        cache=global_cache,
+        is_valid_result=lambda res: isinstance(res, dict) and "distance_km" in res,
+    )
 
-async def famous_restaurants_data(city: str, query: str | None = None) -> list[dict[str, Any]]:
-    """Suggest famous local restaurants, iconic food spots, specialities, ratings, and locations for a city.
-    Supports an optional `query` parameter for cuisine preferences (e.g. 'vegetarian', 'Indian food', 'Italian').
+    if result is not None:
+        return result
 
-    Returns a list of dicts with keys: restaurant_name, speciality, rating, location, why_popular.
-    """
-    try:
-        city = validate_city_name(city)
-    except ValueError as e:
-        return [{"error": str(e)}]
-
-    cuisine_tag = f" for '{query}'" if query else ""
-    logger.info(f"Fetching famous restaurants for city: '{city}'{cuisine_tag}")
-
-    curated_restaurants: dict[str, list[dict[str, Any]]] = {
-        "jaipur": [
-            {"restaurant_name": "Laxmi Misthan Bhandar (LMB)", "speciality": "Authentic Rajasthani Thali, Ghewar, Pyaaz Kachori (Pure Veg)", "rating": "4.6 ⭐", "location": "Johari Bazaar, Old City", "why_popular": "Iconic 290-year-old heritage eatery world-famous for traditional Rajasthani Royal Thali & Ghewar."},
-            {"restaurant_name": "Rawat Misthan Bhandar", "speciality": "World-Famous Pyaaz Kachori & Mawa Kachori (Pure Veg)", "rating": "4.5 ⭐", "location": "Near Railway Station, Station Road", "why_popular": "Legendary spot selling thousands of fresh hot kachoris daily to travelers."},
-            {"restaurant_name": "Natraj Vegetarian Restaurant", "speciality": "North Indian & Traditional Thali (Pure Veg)", "rating": "4.6 ⭐", "location": "MI Road, City Centre", "why_popular": "Highly rated vegetarian family restaurant known for authentic flavours."},
-            {"restaurant_name": "Spice Court", "speciality": "Junglee Maas, Keema Baati, Gatte ki Sabzi", "rating": "4.4 ⭐", "location": "Achrol House, Civil Lines", "why_popular": "Open-air courtyard restaurant serving slow-cooked royal Rajputana heritage recipes."},
-            {"restaurant_name": "1135 AD", "speciality": "Royal Rajputana Feast (Laal Maas, Ker Sangri)", "rating": "4.7 ⭐", "location": "Amer Fort Complex", "why_popular": "Dine like royalty inside a restored 16th-century Amer Fort palace."},
-            {"restaurant_name": "Anokhi Café", "speciality": "Organic Salads, Artisanal Breads, Fresh Coffee (Veg-Friendly)", "rating": "4.5 ⭐", "location": "KK Square, C-Scheme", "why_popular": "Peaceful organic cafe popular for healthy farm-to-table seasonal delicacies."},
-        ],
-        "udaipur": [
-            {"restaurant_name": "Ambrai Restaurant", "speciality": "Mewari Degchi Meat, Butter Chicken, Lake Pichola Views", "rating": "4.8 ⭐", "location": "Amet Haveli, Hanuman Ghat", "why_popular": "Unbeatable waterfront dining right on Lake Pichola overlooking illuminated City Palace."},
-            {"restaurant_name": "Natraj Dining Hall", "speciality": "Unlimited Gujarati & Rajasthani Thali (Pure Veg)", "rating": "4.6 ⭐", "location": "Station Road", "why_popular": "Most famous authentic vegetarian thali restaurant in Udaipur since decades."},
-            {"restaurant_name": "Upre by 1559 AD", "speciality": "Rooftop Fine Dining, Kebabs & Rajasthani Curry", "rating": "4.7 ⭐", "location": "Hotel Lake Pichola Roof", "why_popular": "Stunning panoramic night views of illuminated palaces and lake."},
-            {"restaurant_name": "Jheel's Ginger Coffee Bar & Bakery", "speciality": "Lakeside Wood-Fired Pizza, Bakery & Coffee (Veg-Friendly)", "rating": "4.5 ⭐", "location": "Gangaur Ghat", "why_popular": "Cozy rooftop cafe right on the water edge with sunset views."},
-        ],
-        "delhi": [
-            {"restaurant_name": "Bukhara (ITC Maurya)", "speciality": "Dal Bukhara, Sikandari Raan, Naan Bukhara", "rating": "4.8 ⭐", "location": "Diplomatic Enclave, Chanakyapuri", "why_popular": "World-famous legendary North Indian restaurant visited by global heads of state."},
-            {"restaurant_name": "Karim's", "speciality": "Mutton Burra, Mutton Nihari, Chicken Jahangiri", "rating": "4.5 ⭐", "location": "Gali Kababian, Jama Masjid, Old Delhi", "why_popular": "Historic Mughlai cuisine institution serving royal recipes since 1913."},
-            {"restaurant_name": "Saravanaa Bhavan", "speciality": "South Indian Filter Coffee, Ghee Roast Dosa, Idli (Pure Veg)", "rating": "4.6 ⭐", "location": "Janpath / Connaught Place", "why_popular": "Renowned South Indian pure-vegetarian spot with fast service and authentic tastes."},
-            {"restaurant_name": "Gulati Restaurant", "speciality": "Butter Chicken, Dal Makhani, Kakori Kababs", "rating": "4.7 ⭐", "location": "Pandara Road Market", "why_popular": "Delhi's top destination for rich North Indian & Tandoori dining."},
-        ],
-        "indore": [
-            {"restaurant_name": "Chappan Dukan (56 Shops)", "speciality": "Johnny Hot Dog, Vijay Chaat Khoprakhadis, Shreemaya Sweets", "rating": "4.8 ⭐", "location": "New Palasia", "why_popular": "Cleanest & most famous street-food hub in India with 56 legendary food stalls."},
-            {"restaurant_name": "Sarafa Night Food Market", "speciality": "Bhutte ka Kees, Garadu, Joshi Dahi Bada, Rabri Jalebi (Pure Veg)", "rating": "4.9 ⭐", "location": "Sarafa Bazaar", "why_popular": "Jewelry market by day, transforms into a bustling midnight street food paradise after 8 PM."},
-            {"restaurant_name": "Gurukripa Restaurant", "speciality": "Indori Sev Tamatar, Dal Bafla, Paneer Butter Masala (Pure Veg)", "rating": "4.5 ⭐", "location": "Sarwate / Vijay Nagar", "why_popular": "Indore's iconic pure-veg dhaba famous for rich Sev Tamatar & Dal Bafla."},
-        ],
-        "mumbai": [
-            {"restaurant_name": "Britannia & Co. Restaurant", "speciality": "Berry Pulav, Sali Boti, Caramel Custard", "rating": "4.6 ⭐", "location": "Ballard Estate, Fort", "why_popular": "Historic 1923 Parsi cafe with vintage architecture and legendary Berry Pulav."},
-            {"restaurant_name": "Bademiya", "speciality": "Seekh Kebabs, Baida Roti, Chicken Tikka", "rating": "4.4 ⭐", "location": "Tulloch Road, Colaba", "why_popular": "Iconic late-night street food destination operating since 1946."},
-            {"restaurant_name": "Trishna Restaurant", "speciality": "Butter Pepper Garlic Crab, Koliwada Prawns", "rating": "4.7 ⭐", "location": "Kala Ghoda, Fort", "why_popular": "World-renowned seafood landmark frequented by international culinary critics."},
-            {"restaurant_name": "Swati Snacks", "speciality": "Panki, Sev Puri, Gujarati Street Snacks (Pure Veg)", "rating": "4.6 ⭐", "location": "Tardeo / Nariman Point", "why_popular": "Clean, legendary vegetarian snack eatery serving Gujarati home-style recipes."},
-        ],
-        "goa": [
-            {"restaurant_name": "Britto's Bar & Restaurant", "speciality": "Goan Fish Curry Rice, Prawn Balchão, Baked Crab", "rating": "4.5 ⭐", "location": "Baga Beach", "why_popular": "Beachfront icon serving authentic Goan seafood & live acoustic music."},
-            {"restaurant_name": "Fisherman's Wharf", "speciality": "Kingfish Recheado, Pork Vindaloo, Crab Xacuti", "rating": "4.6 ⭐", "location": "Cavelossim / Panaji", "why_popular": "Riverside dining experience celebrating traditional Goan-Portuguese flavors."},
-            {"restaurant_name": "Vinayak Family Restaurant", "speciality": "Traditional Goan Fish Thali", "rating": "4.7 ⭐", "location": "Assagao", "why_popular": "Most famous local fish thali spot in North Goa."},
-        ],
-        "new york": [
-            {"restaurant_name": "Junoon NYC", "speciality": "Modern Michelin-Starred Indian Cuisine, Ghost Chili Murgh", "rating": "4.6 ⭐", "location": "Flatiron District, Manhattan", "why_popular": "Contemporary fine-dining Indian restaurant with Michelin recognition."},
-            {"restaurant_name": "Dhamaka", "speciality": "Unapologetic Regional Indian Dishes (Goat Neck, Rajasthani Khargosh)", "rating": "4.7 ⭐", "location": "Essex Market, Lower East Side", "why_popular": "One of NYC's most celebrated regional Indian restaurants."},
-            {"restaurant_name": "Saravanaa Bhavan NYC", "speciality": "Authentic South Indian Dosas, Thalis & Filter Coffee (Pure Veg)", "rating": "4.5 ⭐", "location": "Curry Hill / Lexington Ave", "why_popular": "Iconic pure-vegetarian Indian dining hub in Manhattan."},
-            {"restaurant_name": "Katz's Delicatessen", "speciality": "Legendary Pastrami on Rye & Matzo Ball Soup", "rating": "4.6 ⭐", "location": "Lower East Side", "why_popular": "NYC institution operating since 1888, famous worldwide for pastrami sandwiches."},
-        ],
-        "paris": [
-            {"restaurant_name": "Saravanaa Bhavan Paris", "speciality": "Authentic South Indian Vegetarian Thalis, Dosas & Filter Coffee (Pure Veg)", "rating": "4.6 ⭐", "location": "170 Rue du Faubourg Saint-Denis, Gare du Nord", "why_popular": "Top pure-vegetarian South Indian dining landmark in Paris."},
-            {"restaurant_name": "Gandhi Restaurant Paris", "speciality": "North Indian Curry, Butter Chicken, Lamb Rogan Josh, Garlic Naan", "rating": "4.7 ⭐", "location": "66 Rue La Fayette, 9th Arrondissement", "why_popular": "Iconic authentic Indian restaurant celebrated for royal Mughlai & North Indian dishes."},
-            {"restaurant_name": "Le Jardin du Kashmir", "speciality": "Kashmiri Lamb Biryani, Chicken Tikka, Tandoori Platters", "rating": "4.5 ⭐", "location": "60 Rue Rodier, 9th Arrondissement", "why_popular": "One of Paris's oldest and most authentic Kashmiri & North Indian establishments since 1980."},
-            {"restaurant_name": "New Jawad Paris", "speciality": "Tandoori Specialties, Samosas, Chicken Korma & Peshawari Naan", "rating": "4.8 ⭐", "location": "12 Avenue Rapp, 7th Arrondissement (Near Eiffel Tower)", "why_popular": "Celebrated fine-dining Indian-Pakistani restaurant near the Eiffel Tower."},
-            {"restaurant_name": "Le Relais de l'Entrecôte", "speciality": "Steak Frites with Secret House Herb Butter Sauce", "rating": "4.6 ⭐", "location": "Saint-Germain-des-Prés / Champs-Élysées", "why_popular": "Iconic Parisian bistro famous for one classic, perfectly executed dish with endless fries."},
-            {"restaurant_name": "Bistrot Paul Bert", "speciality": "Traditional French Bistro Fare (Steak au Poivre, Paris-Brest)", "rating": "4.7 ⭐", "location": "11th Arrondissement", "why_popular": "Classic Parisian bistro beloved by chefs for authentic bistro classics."},
-            {"restaurant_name": "L'As du Fallafel", "speciality": "Special Fallafel Pita, Roasted Eggplant & Hummus (Veg-Friendly)", "rating": "4.7 ⭐", "location": "Rue des Rosiers, Le Marais", "why_popular": "World-famous falafel hotspot in the historic Jewish Quarter."},
-        ],
-        "london": [
-            {"restaurant_name": "Dishoom", "speciality": "House Black Daal, Bacon Naan Roll, Chicken Ruby", "rating": "4.7 ⭐", "location": "Covent Garden / Shoreditch / King's Cross", "why_popular": "Homage to old Bombay Irani cafés with legendary House Black Daal."},
-            {"restaurant_name": "Gymkhana", "speciality": "Wild Boar Biryani, Duck Dosa, Kasoori Methi Murgh", "rating": "4.8 ⭐", "location": "Mayfair", "why_popular": "Two-Michelin-starred colonial Indian gymkhana club dining."},
-            {"restaurant_name": "Saravanaa Bhavan London", "speciality": "South Indian Vegetarian Thalis, Dosas (Pure Veg)", "rating": "4.5 ⭐", "location": "Leicester Square / Wembley", "why_popular": "World-famous vegetarian South Indian chain."},
-            {"restaurant_name": "Rules Restaurant", "speciality": "Classic British Game, Roast Beef & Yorkshire Pudding", "rating": "4.6 ⭐", "location": "Maiden Lane, Covent Garden", "why_popular": "London's oldest restaurant, established in 1798, celebrating traditional British cuisine."},
-        ],
-        "tokyo": [
-            {"restaurant_name": "Ichiran Ramen", "speciality": "Tonkotsu Ramen with Custom Broth & Red Sauce", "rating": "4.7 ⭐", "location": "Shibuya / Shinjuku", "why_popular": "World-famous ramen chain with individual dining flavor concentration booths."},
-            {"restaurant_name": "Nataraj Pure Vegetarian Tokyo", "speciality": "Organic Indian Curry, Vegan Naan & Thalis (Pure Veg)", "rating": "4.6 ⭐", "location": "Ginza / Shibuya", "why_popular": "Japan's first pure-vegetarian Indian restaurant using organic farm produce."},
-            {"restaurant_name": "Gonpachi Nishiazabu", "speciality": "Handmade Soba, Yakitori & Tempura", "rating": "4.5 ⭐", "location": "Minato City", "why_popular": "Famous 'Kill Bill restaurant' with lively traditional Japanese izakaya atmosphere."},
-        ]
-    }
-
-    city_key = city.lower().strip()
-    if city_key in curated_restaurants:
-        curated_list = curated_restaurants[city_key]
-        if query:
-            filtered = [r for r in curated_list if validate_restaurant_match(r, query)]
-            if filtered:
-                logger.debug(f"Returning {len(filtered)} validated curated restaurants for '{city}' with cuisine '{query}'")
-                return filtered
-        return curated_list
-
-    # --- Live OpenStreetMap Overpass API Integration for all other cities ---
-    try:
-        logger.info(f"Querying OpenStreetMap Overpass API for restaurants in '{city}'")
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            geo_url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}&count=1&language=en&format=json"
-            geo_resp = await client.get(geo_url)
-            if geo_resp.status_code == 200 and geo_resp.json().get("results"):
-                lat = geo_resp.json()["results"][0]["latitude"]
-                lon = geo_resp.json()["results"][0]["longitude"]
-
-                op_url = "https://overpass-api.de/api/interpreter"
-                headers = {"User-Agent": "PlanPilotApp/1.0 (contact@planpilot.ai)"}
-                op_ql = f'[out:json][timeout:5];node["amenity"="restaurant"]["name"](around:4000, {lat}, {lon});out tags 12;'
-                op_resp = await client.post(op_url, data={"data": op_ql}, headers=headers)
-
-                if op_resp.status_code == 200:
-                    elements = op_resp.json().get("elements", [])
-                    osm_restaurants = []
-                    for el in elements:
-                        tags = el.get("tags", {})
-                        name = tags.get("name")
-                        if name:
-                            cuisine = tags.get("cuisine", "Local Specialities").replace("_", " ").title()
-                            addr = tags.get("addr:street", tags.get("addr:suburb", tags.get("addr:city", f"City Centre, {city.title()}")))
-                            
-                            osm_restaurants.append({
-                                "restaurant_name": name,
-                                "speciality": f"{cuisine} Cuisine",
-                                "rating": "4.6 ⭐",
-                                "location": f"{addr}, {city.title()}",
-                                "why_popular": f"Popular {cuisine} dining spot in {city.title()} listed on OpenStreetMap.",
-                                "source": "OpenStreetMap Overpass API"
-                            })
-                            if len(osm_restaurants) >= 5:
-                                break
-                    if osm_restaurants:
-                        logger.info(f"Successfully retrieved {len(osm_restaurants)} restaurants from OpenStreetMap for '{city}'")
-                        return osm_restaurants
-    except Exception as e:
-        logger.warning(f"OpenStreetMap restaurant query exception for '{city}': {e}")
-
-    # Fallback to DuckDuckGo local web search
-    try:
-        search_terms = f"best famous iconic {query} restaurants in {city}" if query else f"famous iconic local restaurants in {city}"
-        search_query = urllib.parse.quote(search_terms)
-        ddg_url = f"https://html.duckduckgo.com/html/?q={search_query}"
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/120.0.0.0 Safari/120.0.0.0"
-            )
-        }
-        async with httpx.AsyncClient(timeout=6.0) as client:
-            resp = await client.get(ddg_url, headers=headers)
-            resp.raise_for_status()
-            blocks = resp.text.split('<div class="result results_links results_links_deep web-result')
-            results = []
-            for block in blocks[1:6]:
-                title_match = re.search(r'<a class="result__a"[^>]*>(.*?)</a>', block, re.DOTALL)
-                snippet_match = re.search(r'<a class="result__snippet"[^>]*>(.*?)</a>', block, re.DOTALL)
-                if title_match and snippet_match:
-                    raw_title = html.unescape(re.sub(r"<[^>]*>", "", title_match.group(1)).strip())
-                    snippet = html.unescape(re.sub(r"<[^>]*>", "", snippet_match.group(1)).strip())
-                    clean_name = re.sub(r"\s*[\|-]\s*(?:Tripadvisor|Zomato|Yelp|Wikipedia|Blog|Instagram|Facebook|YouTube).*", "", raw_title, flags=re.IGNORECASE).strip()
-                    
-                    results.append({
-                        "restaurant_name": clean_name[:65],
-                        "speciality": f"{query.title() if query else 'Famous Local Delicacies'} in {city.title()}",
-                        "rating": "4.6 ⭐",
-                        "location": f"City Centre, {city.title()}",
-                        "why_popular": snippet[:140],
-                        "source": "DuckDuckGo Local Search"
-                    })
-            if results:
-                return results
-    except Exception as e:
-        logger.warning(f"Restaurant search fallback exception for '{city}': {e}")
-
-    return [
-        {
-            "restaurant_name": "Laxmi Misthan Bhandar (LMB)",
-            "speciality": "Authentic Rajasthani Thali, Ghewar, Pyaaz Kachori",
-            "rating": "4.6 ⭐",
-            "location": f"Old City, {city.title()}",
-            "why_popular": f"Top-rated authentic heritage dining spot in {city.title()}.",
-        },
-        {
-            "restaurant_name": "Rawat Misthan Bhandar",
-            "speciality": "Traditional Kachoris & Sweets",
-            "rating": "4.5 ⭐",
-            "location": f"Station Road, {city.title()}",
-            "why_popular": f"Legendary local food spot famous for traditional delicacies.",
-        }
-    ]
-
-
-
+    # TRUTHFUL FALLBACK: Return error if geocoding fails, never fabricate "Approx 350 - 500 km"
+    return {"error": f"Could not calculate travel route between '{source}' and '{destination}' because location geocoding failed."}

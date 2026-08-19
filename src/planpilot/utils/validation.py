@@ -70,9 +70,13 @@ def extract_requirements(query: str, user_prefs: dict[str, Any] | None = None) -
             destination = match_to_from.group(1).strip()
             origin = match_to_from.group(2).strip()
 
-    # 3. Pattern: trip to <destination> / visit <destination> / in <destination>
+    # 3. Pattern: trip to <destination> / visit <destination> / in <destination> / weather in <destination>
     if not destination:
-        match_dest = re.search(r'(?:trip to|travel to|visit|explore|vacation in|plan for|guide to|plan a trip to)\s+([A-Za-z\s\.\'\-]+?)(?:\s+from|\s+including|\s+with|\s+for|\s+and|\.|\,|$)', query, re.IGNORECASE)
+        match_dest = re.search(
+            r'(?:trip to|travel to|visit|explore|vacation in|plan for|guide to|plan a trip to|weather in|hotels in|restaurants in|events in|books in|in)\s+([A-Za-z\s\.\'\-]+?)(?:\s+from|\s+including|\s+with|\s+for|\s+and|\.|\,|$)',
+            query,
+            re.IGNORECASE,
+        )
         if match_dest:
             destination = match_dest.group(1).strip()
 
@@ -148,12 +152,19 @@ def extract_requirements(query: str, user_prefs: dict[str, Any] | None = None) -
             travel_dates = m_date.group(0).strip()
             break
 
-    # Explicit section tags in prompt
-    has_weather = "weather" in q_lower or True
-    has_budget_hotels = any(w in q_lower for w in ["hotel", "stay", "accommodation", "resort", "hostel"]) or True
-    has_restaurants = any(w in q_lower for w in ["food", "restaurant", "cuisine", "dining", "eat"]) or True
-    has_history = any(w in q_lower for w in ["history", "historical", "heritage", "monument", "ancient"]) or True
-    has_books = any(w in q_lower for w in ["book", "reading", "novel", "literature"]) or True
+    # Detect which sections the query explicitly references.
+    # These flags drive the quality gate — only inject content for sections the user asked about.
+    # Use word-boundary regex (\b) to avoid false substring matches
+    # e.g. "eat" must NOT fire inside "weather", "inn" must NOT fire inside "winning".
+    def _has_kw(keywords: list[str]) -> bool:
+        pattern = r"\b(?:" + "|".join(re.escape(k) for k in keywords) + r")\b"
+        return bool(re.search(pattern, q_lower))
+
+    has_weather      = _has_kw(["weather", "temperature", "forecast", "rain", "sunny", "climate"])
+    has_budget_hotels = _has_kw(["hotel", "hotels", "stay", "accommodation", "resort", "hostel", "lodging"])
+    has_restaurants  = _has_kw(["food", "restaurant", "restaurants", "cuisine", "dining", "eat", "cafe", "delicacy"])
+    has_history      = _has_kw(["history", "historical", "heritage", "monument", "ancient", "culture"])
+    has_books        = _has_kw(["book", "books", "reading", "novel", "literature", "author"])
 
     return UserRequirements(
         origin=origin,
@@ -344,6 +355,9 @@ def validate_and_enforce_sections(
             missing_sections.append(section_name)
 
     if not missing_sections:
+        # Do not claim that every tool was used when a complete answer was
+        # produced from only part of the requested data.
+        return response_text
         # Append Tools Used block if not already present
         if "Tools Used" not in response_text and "### Tools Used" not in response_text:
             response_text += "\n\n### Tools Used\n✓ travel_route\n✓ get_weather\n✓ find_budget_hotels\n✓ famous_restaurants\n✓ discover_events\n✓ search_books"
@@ -413,7 +427,10 @@ def validate_and_enforce_sections(
             else:
                 synthesized_parts.append(f"# Upcoming Events\nNo upcoming events found.")
         elif sec == "History of Destination":
-            synthesized_parts.append(f"# History of Destination\n{dest} is a historical urban location with unique heritage, architecture, and cultural landmarks.")
+            synthesized_parts.append(
+                "# History of Destination\n"
+                "Historical information was not retrieved by a dedicated source."
+            )
         elif sec == "Recommended Books":
             books = tool_context.get("books", [])
             valid_books = [b for b in books if "error" not in b and b.get("title")]
@@ -423,21 +440,20 @@ def validate_and_enforce_sections(
             else:
                 synthesized_parts.append(f"# Recommended Books\nBook recommendations unavailable.")
         elif sec == "Suggested Itinerary":
-            hotels = tool_context.get("hotels", [])
-            rests = tool_context.get("restaurants", [])
-            stay = hotels[0].get("hotel_name", f"Central Hotel in {dest}") if hotels else f"hotel in {dest}"
-            dine = rests[0].get("restaurant_name", f"{cuisine} dining") if rests else "local dining"
             synthesized_parts.append(
-                f"# Suggested Itinerary\n"
-                f"- **Day 1**: Arrive in {dest}, check in at {stay}. Afternoon orientation walk and evening dinner at {dine}.\n"
-                f"- **Day 2**: Full day exploring key cultural sites, historical districts, and local markets in {dest}.\n"
-                f"- **Day 3**: Morning sightseeing, local shopping, and departure."
+                "# Suggested Itinerary\n"
+                "An itinerary was not generated because no grounded attraction or schedule data was retrieved."
             )
         elif sec == "Travel Tips":
-            synthesized_parts.append(f"# Travel Tips\n- **Transit**: Use local transit passes and official taxis.\n- **Payments**: Cards and local currency accepted.\n- **Bookings**: Reserve major attraction tickets in advance.")
+            synthesized_parts.append(
+                "# Travel Tips\n"
+                "Confirm local transport, payment, and booking requirements with current official sources before travel."
+            )
 
     result_full = "\n\n".join(synthesized_parts)
-    if "Tools Used" not in result_full and "### Tools Used" not in result_full:
+    # Tool usage is tracked by the agent; this formatter must not claim every
+    # registered tool ran for an answer.
+    if False and "Tools Used" not in result_full and "### Tools Used" not in result_full:
         result_full += "\n\n### Tools Used\n✓ travel_route\n✓ get_weather\n✓ find_budget_hotels\n✓ famous_restaurants\n✓ discover_events\n✓ search_books"
 
     return result_full

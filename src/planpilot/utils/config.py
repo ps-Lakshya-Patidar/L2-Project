@@ -72,28 +72,8 @@ class Settings(BaseSettings):
 
     # --- LLM Provider Selection ---
     llm_provider: str = Field(
-        default="gemini",
-        description="LLM Provider to use ('gemini', 'groq', or 'ollama').",
-    )
-
-    # --- Google Gemini ---
-    google_api_key: str | None = Field(
-        default=None,
-        description="API key for Google Gemini / Google AI Studio.",
-    )
-    gemini_model: str = Field(
-        default="gemini-3.6-flash",
-        description="Google Gemini model to use (e.g. gemini-3.6-flash, gemini-3.7-flash).",
-    )
-
-    # --- Groq ---
-    groq_api_key: str | None = Field(
-        default=None,
-        description="API key for Groq Cloud.",
-    )
-    groq_model: str = Field(
-        default="openai/gpt-oss-20b",
-        description="Groq model to use.",
+        default="openrouter",
+        description="LLM Provider to use ('openrouter' or 'ollama').",
     )
 
     # --- OpenRouter ---
@@ -103,7 +83,7 @@ class Settings(BaseSettings):
     )
     openrouter_model: str = Field(
         default="openrouter/free",
-        description="OpenRouter model to use (e.g. openrouter/free, openai/gpt-oss-20b:free).",
+        description="OpenRouter model to use (e.g. openrouter/free, meta-llama/llama-3.3-70b-instruct:free).",
     )
     openrouter_base_url: str = Field(
         default="https://openrouter.ai/api/v1",
@@ -140,6 +120,11 @@ class Settings(BaseSettings):
     http_max_retries: int = Field(
         default=3,
         description="Maximum retry attempts for failed HTTP requests.",
+    )
+
+    agent_reflection_enabled: bool = Field(
+        default=False,
+        description="Enable the optional second LLM quality-review call after a draft response.",
     )
 
 

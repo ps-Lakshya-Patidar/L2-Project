@@ -72,12 +72,17 @@ async def run_agent_interactive(agent: PlanPilotAgent, query: str) -> None:
 
     async def callback(msg: str) -> None:
         indicator.update(msg)
-        if msg.startswith("Calling tool '"):
-            clean_msg = msg.replace("Calling tool '", "").replace("' with args", " with args")
-            console.print(f"[bold blue]✦ Calling MCP Tool:[/] {clean_msg}")
-        elif msg.startswith("Received output from '"):
-            clean_msg = msg.replace("Received output from '", "").replace("'", "")
-            console.print(f"[bold green]✔ MCP Tool Output:[/] {clean_msg}")
+        if msg.startswith("TOOL_TRACE:start:"):
+            parts = msg.split(":", 3)
+            tool_name = parts[2] if len(parts) > 2 else "tool"
+            args_part = parts[3] if len(parts) > 3 else "{}"
+            console.print(f"[bold blue]✦ Calling MCP Tool:[/] {tool_name} {args_part}")
+        elif msg.startswith("TOOL_TRACE:end:"):
+            parts = msg.split(":", 3)
+            tool_name = parts[2] if len(parts) > 2 else "tool"
+            source = parts[3] if len(parts) > 3 else "live"
+            icon = "⚡" if source == "cache" else "✔"
+            console.print(f"[bold green]{icon} MCP Tool Output:[/] {tool_name} ({source})")
 
     try:
         response = await agent.run_query(query, status_callback=callback)

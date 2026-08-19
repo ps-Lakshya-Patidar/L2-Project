@@ -1,12 +1,12 @@
 # 🧭 PlanPilot: Personal AI Travel & Concierge Agent
 
-PlanPilot is a stateful AI travel planning agent powered by **Google Gemini** (default), **Groq Cloud**, and **Ollama**, the **Model Context Protocol (MCP)**, OpenStreetMap Overpass API, and free public services. It acts as your personal concierge to compile personalized travel itineraries, fetch real-time weather, search spatial hotels & restaurants, compute real-world transport routes, recommend books, and discover live local events.
+PlanPilot is a stateful AI travel planning agent powered by **OpenRouter** (default) and **Ollama**, the **Model Context Protocol (MCP)**, OpenStreetMap Overpass API, and free public services. It acts as your personal concierge to compile personalized travel itineraries, fetch real-time weather, search spatial hotels & restaurants, compute real-world transport routes, recommend books, and discover live local events.
 
 ---
 
 ## ✨ Key Features & Capability Matrix
 
-- **🤖 Multi-LLM Provider Support (Google Gemini Default)**: Powered by `gemini-3.6-flash` / `gemini-3.7-flash` with zero rate limit bottlenecks and massive throughput. Also supports Groq (`openai/gpt-oss-20b`, `qwen/qwen3.6-27b`) and local Ollama (`llama3.2:3b`).
+- **🤖 Multi-LLM Provider Support**: Powered by **OpenRouter** (access to free models like `openrouter/free`, `meta-llama/llama-3.3-70b-instruct:free`, `deepseek/deepseek-r1:free`) and local **Ollama** (`llama3.2:3b`).
 - **🏨 Spatial Hotel Discovery (`find_budget_hotels`)**: Queries OpenStreetMap (OSM) Overpass API (`node["tourism"~"hotel|hostel|guest_house"]`) for live stays. Supports dynamic budget tiers (`low`, `mid-range`, `premium`, `luxury`).
 - **🛣️ Real-World Route & Geocoding (`travel_route`)**: Validates real-world cities on Earth via Open-Meteo geocoding. Rejects fake/gibberish cities (`asdfgh`, `qwerty`). Computes Haversine Great Circle distances, travel times, transport modes (Train, Bus, Flight, Drive), intercontinental trans-oceanic flight routing, and route summaries.
 - **🍽️ Spatial Restaurant Discovery (`famous_restaurants`)**: Uses OpenStreetMap Overpass API (`node["amenity"="restaurant"]["name"]`) and curated heritage dining spots to return authentic local restaurants, cuisines, dietary filters (`vegetarian`, `vegan`, `Italian`), and street addresses.
@@ -15,7 +15,7 @@ PlanPilot is a stateful AI travel planning agent powered by **Google Gemini** (d
 - **🎟️ Live Event Discovery (`discover_events`)**: Locates concerts, exhibitions, or cultural activities for any city via SerpAPI and DuckDuckGo.
 - **🧠 JSON Profile Memory & Departure City Fallback**: Stores user preferences in `PlanPilot/data/user_preferences.json`. When a prompt omits the departure city (e.g., `"Plan a 3-day trip to Jaipur"`), it automatically retrieves `home_city` from JSON memory.
 - **📊 Evaluation Metrics & Telemetry Engine**: Tracks token usage (`tiktoken` / API metadata), millisecond latency (`time.monotonic()`), step counts, and real-time cost estimations based on model pricing grids in the Streamlit UI. Automated suite testing via **`pytest`**.
-- **🌐 Interactive Streamlit Portal**: Features dynamic provider & model dropdown selectors (Google Gemini, Groq, Ollama), travel vibe goals, profile editing, and live trace logs.
+- **🌐 Interactive Streamlit Portal**: Features dynamic provider & model dropdown selectors (OpenRouter, Ollama), travel vibe goals, profile editing, and live trace logs.
 
 ---
 
@@ -25,7 +25,7 @@ PlanPilot monitors and evaluates performance using the following tools and libra
 
 1. **Token Usage Metrics**: Extracted from LLM provider metadata (`prompt_tokens`, `completion_tokens`, `total_tokens`) or computed via **`tiktoken`**.
 2. **Step Count & Latency Telemetry**: Measured per tool call and per reasoning step using Python's native **`time.monotonic()`** module inside async status callbacks.
-3. **Real-time Cost Estimation Engine**: Calculated dynamically using model rate cards (e.g. Google Gemini Free Tier / Groq rate cards) configured in `streamlit_app.py`.
+3. **Real-time Cost Estimation Engine**: Calculated dynamically using model rate cards configured in `streamlit_app.py`.
 4. **Unit Testing & Code Quality Suite**: Automated unit tests built with **`pytest`** (`tests/test_preferences.py`).
 
 ---
@@ -42,8 +42,8 @@ User ──► CLI / Streamlit UI
               │
        ┌───────┴───────┐
        ▼               ▼
- Google Gemini /      MCP Client Session
- Groq / Ollama        │ (stdio transport protocol)
+  OpenRouter /        MCP Client Session
+  Ollama              │ (stdio transport protocol)
                        ▼
                 MCP Subprocess (planpilot.mcp_server)
                        │
@@ -55,6 +55,9 @@ User ──► CLI / Streamlit UI
                        │
                        ▼
               External APIs / Services:
+              (Open-Meteo, OpenStreetMap Overpass, Open Library, SerpAPI, DuckDuckGo)
+```
+     External APIs / Services:
               (Open-Meteo, OpenStreetMap Overpass, Open Library, SerpAPI, DuckDuckGo)
 ```
 

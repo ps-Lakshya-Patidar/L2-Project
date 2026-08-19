@@ -240,24 +240,12 @@ with st.sidebar:
     st.markdown("**⚡ System Vitals**")
     provider = settings.llm_provider.lower().strip()
 
-    if provider == "gemini":
-        if settings.google_api_key:
-            st.markdown('<span class="badge-online">🟢 Google Gemini</span>', unsafe_allow_html=True)
-            st.caption(f"Model: `{settings.gemini_model}`")
-        else:
-            st.markdown('<span class="badge-offline">🔴 Google API Key Missing</span>', unsafe_allow_html=True)
-    elif provider == "openrouter":
+    if provider == "openrouter":
         if settings.openrouter_api_key:
             st.markdown('<span class="badge-online">🟢 OpenRouter Active</span>', unsafe_allow_html=True)
             st.caption(f"Model: `{settings.openrouter_model}`")
         else:
             st.markdown('<span class="badge-offline">🔴 OpenRouter Key Missing</span>', unsafe_allow_html=True)
-    elif provider == "groq":
-        if settings.groq_api_key:
-            st.markdown('<span class="badge-online">🟢 Groq Cloud</span>', unsafe_allow_html=True)
-            st.caption(f"Model: `{settings.groq_model}`")
-        else:
-            st.markdown('<span class="badge-offline">🔴 Groq Key Missing</span>', unsafe_allow_html=True)
     else:
         try:
             resp = httpx.get(f"{settings.ollama_base_url}/api/tags", timeout=2.0)
@@ -305,14 +293,8 @@ with st.sidebar:
 
     # --- Model Config ---
     with st.expander("⚙️ Model Configuration", expanded=True):
-        provider_options = ["Gemini", "OpenRouter", "Groq", "Ollama"]
-        current_idx = 0
-        if provider == "openrouter":
-            current_idx = 1
-        elif provider == "groq":
-            current_idx = 2
-        elif provider == "ollama":
-            current_idx = 3
+        provider_options = ["OpenRouter", "Ollama"]
+        current_idx = 0 if provider == "openrouter" else 1
 
         provider_select = st.selectbox(
             "LLM Provider:", options=provider_options, index=current_idx
@@ -323,54 +305,7 @@ with st.sidebar:
             st.session_state.agent.reset()
             st.rerun()
 
-        if provider_select == "Gemini":
-            gemini_models = [
-                "gemini-3.6-flash",
-                "gemini-3.7-flash",
-                "gemini-3.5-flash",
-                "gemini-2.5-flash",
-                "gemini-2.5-pro",
-                "gemini-2.5-flash-lite",
-                "gemini-2.0-flash",
-                "gemini-2.0-flash-lite",
-                "gemini-2.0-pro-exp-02-05",
-                "gemini-1.5-flash",
-                "gemini-1.5-pro",
-                "gemini-flash-latest",
-                "gemini-pro-latest",
-                "Custom Model..."
-            ]
-            curr_gem = settings.gemini_model
-            if curr_gem not in gemini_models:
-                gemini_models.insert(0, curr_gem)
-
-            selected_gem = st.selectbox(
-                "Gemini Model:",
-                options=gemini_models,
-                index=gemini_models.index(curr_gem) if curr_gem in gemini_models else 0
-            )
-            if selected_gem == "Custom Model...":
-                gem_input = st.text_input("Enter Gemini Model:", value=curr_gem)
-            else:
-                gem_input = selected_gem
-
-            gem_key_input = st.text_input(
-                "Google Gemini API Key:",
-                value=settings.google_api_key or "",
-                type="password",
-                placeholder="AQ.Ab8RN6Io6b...",
-            )
-
-            if (gem_input != settings.gemini_model) or (gem_key_input and gem_key_input != settings.google_api_key):
-                if st.button("Apply Gemini Settings", use_container_width=True):
-                    settings.gemini_model = gem_input
-                    if gem_key_input:
-                        settings.google_api_key = gem_key_input
-                    st.session_state.agent.reset()
-                    st.success("Gemini settings applied!")
-                    st.rerun()
-
-        elif provider_select == "OpenRouter":
+        if provider_select == "OpenRouter":
             openrouter_free_models = [
                 "openrouter/free",
                 "openai/gpt-oss-20b:free",
@@ -426,33 +361,6 @@ with st.sidebar:
                     st.session_state.agent.reset()
                     st.success("OpenRouter settings applied!")
                     st.rerun()
-
-        elif provider_select == "Groq":
-            groq_models = [
-                "openai/gpt-oss-20b",
-                "qwen/qwen3.6-27b",
-                "openai/gpt-oss-120b",
-                "Custom Model..."
-            ]
-            curr_groq = settings.groq_model
-            if curr_groq not in groq_models:
-                groq_models.insert(0, curr_groq)
-
-            selected_groq = st.selectbox(
-                "Groq Model:",
-                options=groq_models,
-                index=groq_models.index(curr_groq) if curr_groq in groq_models else 0
-            )
-
-            if selected_groq == "Custom Model...":
-                groq_model_input = st.text_input("Enter Custom Groq Model:", value=curr_groq)
-            else:
-                groq_model_input = selected_groq
-
-            if groq_model_input != settings.groq_model:
-                settings.groq_model = groq_model_input
-                st.session_state.agent.reset()
-                st.rerun()
         else:
             # Fetch local Ollama models dynamically
             available_models = []
@@ -594,31 +502,51 @@ with tab_chat:
 
                 async def ui_callback(msg: str) -> None:
                     print(f"[PlanPilot Log] {msg}", flush=True)
-                    if "Calling tool '" in msg:
-                        tool_name = msg.split("'")[1] if "'" in msg else "tool"
-                        args_part = msg.split("args ")[-1] if "args " in msg else "{}"
+                    if msg.startswith("TOOL_TRACE:start:"):
+                        parts = msg.split(":", 3)
+                        tool_name = parts[2] if len(parts) > 2 else "tool"
+                        args_part = parts[3] if len(parts) > 3 else "{}"
                         t_start = time.monotonic()
-                        status_box.write(f"⚙️ **Tool Call:** `{tool_name}` — {args_part}")
+                        # Append FIRST — before any Streamlit call that could raise
                         trace_items.append({"tool": tool_name, "args": args_part, "started": t_start})
-                    elif "Received output" in msg:
-                        tool_name = msg.replace("Received output from '", "").replace("'", "")
-                        # Find and complete the trace item
+                        try:
+                            status_box.write(f"⚙️ **Tool Call:** `{tool_name}`")
+                        except BaseException:
+                            pass
+                    elif msg.startswith("TOOL_TRACE:end:"):
+                        parts = msg.split(":", 3)
+                        tool_name = parts[2] if len(parts) > 2 else "tool"
+                        source = parts[3] if len(parts) > 3 else "live"
+                        # Complete the matching trace entry FIRST
                         for item in reversed(trace_items):
                             if item["tool"] == tool_name and "duration_ms" not in item:
                                 item["duration_ms"] = int((time.monotonic() - item["started"]) * 1000)
+                                item["source"] = source
                                 break
-                        status_box.write(f"✅ **Output received:** `{tool_name}`")
+                        try:
+                            icon = "⚡" if source == "cache" else "✅"
+                            status_box.write(f"{icon} **Output received:** `{tool_name}` ({source})")
+                        except BaseException:
+                            pass
                     else:
-                        status_box.update(label=msg)
+                        try:
+                            status_box.update(label=msg)
+                        except BaseException:
+                            pass
 
                 try:
-                    response = asyncio.run(
-                        st.session_state.agent.run_query(
-                            prompt,
-                            status_callback=ui_callback,
-                            goal=st.session_state.selected_goal,
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+                    try:
+                        response = loop.run_until_complete(
+                            st.session_state.agent.run_query(
+                                prompt,
+                                status_callback=ui_callback,
+                                goal=st.session_state.selected_goal,
+                            )
                         )
-                    )
+                    finally:
+                        loop.close()
 
                     status_box.update(label="Plan compiled! ✨", state="complete", expanded=False)
 
@@ -672,12 +600,20 @@ with tab_chat:
                 except BaseException as e:
                     # Handles both regular exceptions and Python 3.11+ BaseExceptionGroup
                     # (raised by anyio TaskGroup used inside the MCP stdio_client)
+                    # Save any trace items collected before the crash
+                    for item in trace_items:
+                        if "duration_ms" not in item:
+                            item["duration_ms"] = 0
+                    st.session_state.tool_trace.extend(trace_items)
                     if hasattr(e, "exceptions"):
                         errs = "; ".join(str(sub) for sub in e.exceptions)  # type: ignore[attr-defined]
                     else:
                         errs = str(e)
-                    status_box.update(label="Something went wrong!", state="error", expanded=True)
-                    st.error(f"Error: {errs}")
+                    try:
+                        status_box.update(label="Something went wrong!", state="error", expanded=True)
+                        st.error(f"Error: {errs}")
+                    except BaseException:
+                        pass
 
 # ─── Preferences Tab ───
 with tab_prefs:

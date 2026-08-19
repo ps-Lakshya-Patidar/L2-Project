@@ -17,20 +17,26 @@ ENV/
 *.swo
 *~
 
-# Project-specific
+# Environment & Config
 .env
+
+# Logs & Temporary Output Files
 *.log
 logs/
+*.tmp
+tool_loop_extract.txt
+patch_agent.py
 
-# Testing artifacts
+# User Data & Cache Files (local process state)
+data/user_preferences.json
+data/planpilot_cache.json
+scratch/
+
+# Testing & Quality Caches
 .coverage
 htmlcov/
 .pytest_cache/
 .mypy_cache/
-
-# Testing & Documentation
-tests/
-docs/
 
 # OS generated files
 .DS_Store

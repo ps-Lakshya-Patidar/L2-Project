@@ -25,8 +25,13 @@ def setup_logger(name: str = "planpilot") -> logging.Logger:
         # Ensure directory exists
         _LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+        class AutoFlushingRotatingFileHandler(RotatingFileHandler):
+            def emit(self, record: logging.LogRecord) -> None:
+                super().emit(record)
+                self.flush()
+
         # Rotating file handler (10MB max bytes, 3 backup files)
-        file_handler = RotatingFileHandler(
+        file_handler = AutoFlushingRotatingFileHandler(
             _LOG_FILE, maxBytes=10 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
         formatter = logging.Formatter(

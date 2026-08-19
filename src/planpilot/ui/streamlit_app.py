@@ -219,6 +219,33 @@ def _init_state() -> None:
         st.session_state.selected_goal = prefs.get("weekend_goal", "Explore")
 
 
+def _run_async(coro):
+    """Safely run an async coroutine in Streamlit's script runner thread.
+
+    Prevents 'RuntimeError: Event loop is closed' when Streamlit's script thread finishes.
+    """
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return loop.run_until_complete(coro)
+    finally:
+        try:
+            pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+            if pending:
+                for task in pending:
+                    task.cancel()
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        except Exception:
+            pass
+        finally:
+            loop.close()
+            # Restore a fresh, open loop for the current thread so Streamlit's completion handlers don't crash
+            try:
+                asyncio.set_event_loop(asyncio.new_event_loop())
+            except Exception:
+                pass
+
+
 _init_state()
 settings = get_settings()
 
@@ -507,7 +534,6 @@ with tab_chat:
                         tool_name = parts[2] if len(parts) > 2 else "tool"
                         args_part = parts[3] if len(parts) > 3 else "{}"
                         t_start = time.monotonic()
-                        # Append FIRST — before any Streamlit call that could raise
                         trace_items.append({"tool": tool_name, "args": args_part, "started": t_start})
                         try:
                             status_box.write(f"⚙️ **Tool Call:** `{tool_name}`")
@@ -517,7 +543,6 @@ with tab_chat:
                         parts = msg.split(":", 3)
                         tool_name = parts[2] if len(parts) > 2 else "tool"
                         source = parts[3] if len(parts) > 3 else "live"
-                        # Complete the matching trace entry FIRST
                         for item in reversed(trace_items):
                             if item["tool"] == tool_name and "duration_ms" not in item:
                                 item["duration_ms"] = int((time.monotonic() - item["started"]) * 1000)
@@ -535,18 +560,13 @@ with tab_chat:
                             pass
 
                 try:
-                    loop = asyncio.new_event_loop()
-                    asyncio.set_event_loop(loop)
-                    try:
-                        response = loop.run_until_complete(
-                            st.session_state.agent.run_query(
-                                prompt,
-                                status_callback=ui_callback,
-                                goal=st.session_state.selected_goal,
-                            )
+                    response = _run_async(
+                        st.session_state.agent.run_query(
+                            prompt,
+                            status_callback=ui_callback,
+                            goal=st.session_state.selected_goal,
                         )
-                    finally:
-                        loop.close()
+                    )
 
                     status_box.update(label="Plan compiled! ✨", state="complete", expanded=False)
 

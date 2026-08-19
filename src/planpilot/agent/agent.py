@@ -32,117 +32,29 @@ from planpilot.utils.validation import (
     UserRequirements,
     MANDATORY_SECTIONS,
 )
+from planpilot.utils.resilience import global_cache
 
 # ---------------------------------------------------------------------------
 # Centralized prompt constants — single source of truth, no runtime duplication
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """
-# ROLE: Trip Planning Agent with MCP Tools
-You are PlanPilot, an AI Trip Planner that uses MCP tools to fetch live data. You orchestrate 6 tools:
-1. `get_weather` — Current weather + 3-day forecast
-2. `travel_route` — Distance, travel modes, duration, cost
-3. `find_budget_hotels` — Hotel recommendations with class/rating/price
-4. `famous_restaurants` — Local cuisine, specialities, ratings
-5. `discover_events` — Live concerts, exhibitions, festivals
-6. `search_books` — Destination-related books
+_SYSTEM_PROMPT = """You are PlanPilot, an AI Trip Planner using 6 MCP tools:
+1. get_weather — Current weather + 3-day forecast
+2. travel_route — Distance, modes, duration, cost
+3. find_budget_hotels — Hotel recommendations
+4. famous_restaurants — Local cuisine & ratings
+5. discover_events — Concerts, exhibitions, festivals
+6. search_books — Destination books
 
-# OUTPUT STRUCTURE RULES
-## For SINGLE-TOPIC queries (weather/hotels/restaurants/events/books/routes):
-- Answer ONLY the requested topic using tool results
-- NEVER output the 11-section travel plan format
+OUTPUT RULES:
+- SINGLE-TOPIC: Answer only the requested topic. Never output 11-section format.
+- FULL TRAVEL PLANS: Output all 11 sections (Overview, Weather, How to Reach, Budget, Accommodation, Restaurants, Events, History, Books, Itinerary, Tips).
+
+CRITICAL:
+- NEVER invent data. Use only tool outputs.
+- If tool returns empty, state "Data unavailable"
 - Include units: °C, km/h, km, hours, ₹/$
-
-## For FULL TRAVEL PLANS ("plan a trip to X", "itinerary for X"):
-You MUST output ALL 11 sections in this EXACT order:
-
-1. **# Destination Overview**
-   - Brief introduction (2-3 lines)
-   - Key highlights
-   - Best time to visit
-
-2. **# Weather**
-   - Current temperature (°C), wind speed (km/h)
-   - Rain probability (%)
-   - 3-day forecast (use `get_weather` tool)
-   - Note if dates unspecified
-
-3. **# How to Reach**
-   - Source → Destination distance (km)
-   - Recommended transport mode (Flight/Train/Drive)
-   - Estimated duration (hours)
-   - Approximate cost (₹/$) (use `travel_route` tool)
-
-4. **# Estimated Budget**
-   - Accommodation: ₹ range per night
-   - Transit: ₹ range (from route tool)
-   - Food & local: ₹ per day
-   - Total 3-day budget: ₹ range
-
-5. **# Accommodation Options**
-   - List 3-5 hotels from `find_budget_hotels` tool
-   - Format: **Hotel Name** (Hotel Class) — Price Range | Rating: X.X/5.0 ⭐ | Location: Area
-   - Include budget tier (low/mid-range/luxury)
-
-6. **# Restaurants**
-   - List 3-5 restaurants from `famous_restaurants` tool
-   - Format: **Restaurant Name** (Cuisine Speciality) — Rating: X.X ⭐ | Location: Area
-   - Mention famous local dishes
-
-7. **# Upcoming Events**
-   - List 3-5 events from `discover_events` tool
-   - Format: **Event Name** — Date/Time | Venue
-   - Include event type (concert/exhibition/festival)
-
-8. **# History of Destination**
-   - Brief historical context (2-3 lines)
-   - Founding year, cultural significance
-   - Key historical landmarks
-
-9. **# Recommended Books**
-   - List 2-3 books from `search_books` tool
-   - Format: **Book Title** by Author (Year) — Brief description
-   - Include info URL if available
-
-10. **# Suggested Itinerary**
-    - Day 1: Arrival + orientation
-    - Day 2: Heritage exploration
-    - Day 3: Cultural immersion + departure
-    - Include specific attractions from tool data
-
-11. **# Travel Tips**
-    - Local transport options
-    - Dress code recommendations
-    - Payment methods
-    - Safety tips
-    - Peak season advice
-
-# ANTI-HALLUCINATION RULES
-- NEVER invent hotels, restaurants, events, books, or weather data
-- ALL factual information MUST come from tool outputs
-- If tool returns empty/error, state "Data unavailable"
-- Do NOT fill missing sections with fabricated content
-
-# TOOL USAGE RULES
-- For travel plans: Call ALL 6 tools (weather, route, hotels, restaurants, events, books)
-- For single-topic: Call ONLY the relevant tool(s)
-- Use user's cuisine preference in restaurant queries
-- Use user's budget tier in hotel queries
-- Auto-fill departure city from user preferences
-
-# FORMATTING RULES
-- Use markdown headers (#, ##)
-- Use bullet points for lists
-- Include emojis sparingly (📍, 🏨, 🍽️, 🎭, 📚)
-- Separate sections with blank lines
-- End with "Tools Used" section listing called tools
-
-# EXAMPLE OUTPUT STRUCTURE
-For "Plan a trip to Jaipur":
-1. Call all 6 tools
-2. Structure output with 11 sections
-3. Populate each section with tool data
-4. Never invent missing information
+- Use markdown headers and bullet points
 """
 
 # Lightweight verification prompt for the reflection pass (~80 tokens vs ~280 tokens)
@@ -224,10 +136,36 @@ class PlanPilotAgent:
         self.messages: list[dict[str, Any]] = [
             {"role": "system", "content": _SYSTEM_PROMPT}
         ]
+        self._response_cache_enabled = True
 
     def reset(self) -> None:
         """Reset the conversation history."""
         self.messages = [{"role": "system", "content": _SYSTEM_PROMPT}]
+
+    def _get_response_cache_key(self, user_query: str, reqs: UserRequirements) -> str:
+        """Generate a cache key for response caching based on normalized query + requirements."""
+        import hashlib
+        normalized_query = user_query.lower().strip()
+        req_tuple = (
+            reqs.destination.lower().strip(),
+            reqs.origin.lower().strip() if reqs.origin else "",
+            reqs.cuisine.lower().strip() if reqs.cuisine else "",
+            reqs.budget_level.lower().strip() if reqs.budget_level else "",
+        )
+        combined = f"{normalized_query}:{':'.join(req_tuple)}"
+        return f"response:{hashlib.md5(combined.encode()).hexdigest()}"
+
+    def _prune_message_history(self, max_exchanges: int = 3) -> None:
+        """Keep system + last N tool exchanges only to reduce context size."""
+        system = [m for m in self.messages if m.get("role") == "system"]
+        exchanges = []
+        for msg in reversed(self.messages):
+            if msg.get("role") == "system":
+                continue
+            exchanges.append(msg)
+            if len(exchanges) >= max_exchanges * 2:  # assistant + tool pairs
+                break
+        self.messages = system + list(reversed(exchanges))
 
     def _merge_system_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Combine all system messages into a single system message at the start of the list."""
@@ -385,33 +323,77 @@ class PlanPilotAgent:
         return data, json.dumps(data, ensure_ascii=False)
 
     @staticmethod
-    def _compact_tool_output(data: Any | None, raw_text: str, char_limit: int) -> str:
-        """Keep tool context valid JSON while putting a firm cap on prompt size."""
+    def _compact_tool_output(data: Any | None, raw_text: str, query_type: str = "general", char_limit: int | None = None) -> str:
+        """Filter irrelevant fields based on query intent before truncating."""
+        limit = char_limit if char_limit is not None else 1000
         if data is None:
-            if len(raw_text) <= char_limit:
+            if len(raw_text) <= limit:
                 return raw_text
-            return json.dumps({"_truncated": True, "preview": raw_text[:char_limit]})
+            return json.dumps({"_truncated": True, "preview": raw_text[:limit]})
 
+        # Query-aware field filtering to reduce token waste
+        if query_type == "weather_only" and isinstance(data, dict):
+            filtered = {
+                "city": data.get("city"),
+                "temperature_c": data.get("temperature_c"),
+                "windspeed_kmh": data.get("windspeed_kmh"),
+                "forecast_next_12h": data.get("forecast_next_12h"),
+                "daily_forecast_3_days": data.get("daily_forecast_3_days")
+            }
+            return json.dumps(filtered, ensure_ascii=False)
+
+        elif query_type == "hotels_only" and isinstance(data, list):
+            filtered = [{
+                "hotel_name": h.get("hotel_name"),
+                "price_range": h.get("price_range"),
+                "rating": h.get("rating"),
+                "location": h.get("location")
+            } for h in data[:3]]
+            return json.dumps(filtered, ensure_ascii=False)
+
+        elif query_type == "restaurants_only" and isinstance(data, list):
+            filtered = [{
+                "restaurant_name": r.get("restaurant_name"),
+                "speciality": r.get("speciality"),
+                "rating": r.get("rating"),
+                "location": r.get("location")
+            } for r in data[:3]]
+            return json.dumps(filtered, ensure_ascii=False)
+
+        elif query_type == "events_only" and isinstance(data, list):
+            filtered = [{
+                "source": e.get("source"),
+                "summary": e.get("summary")
+            } for e in data[:3]]
+            return json.dumps(filtered, ensure_ascii=False)
+
+        elif query_type == "books_only" and isinstance(data, list):
+            filtered = [{
+                "title": b.get("title"),
+                "author": b.get("author"),
+                "year": b.get("first_publish_year")
+            } for b in data[:2]]
+            return json.dumps(filtered, ensure_ascii=False)
+
+        # Default: use existing truncation logic
         serialized = json.dumps(data, ensure_ascii=False)
-        if len(serialized) <= char_limit:
+        if len(serialized) <= limit:
             return serialized
 
         if isinstance(data, list):
             preview: list[Any] = []
             for item in data:
                 candidate = json.dumps(preview + [item], ensure_ascii=False)
-                if len(candidate) > char_limit and preview:
+                if len(candidate) > limit and preview:
                     break
-                if len(candidate) > char_limit:
+                if len(candidate) > limit:
                     break
                 preview.append(item)
             if len(preview) < len(data):
                 preview.append({"_note": f"{len(data) - len(preview)} more items omitted"})
             return json.dumps(preview, ensure_ascii=False)
 
-        # A large object is still represented as valid JSON.  The complete
-        # decoded value remains in tool_context for deterministic fallbacks.
-        return json.dumps({"_truncated": True, "preview": serialized[:char_limit]})
+        return json.dumps({"_truncated": True, "preview": serialized[:limit]})
 
     def _sanitize_tool_schema_for_groq(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Sanitize JSON schemas to comply with Groq/OpenAI tool-calling specifications."""
@@ -727,6 +709,135 @@ class PlanPilotAgent:
                 raise e.exceptions[0] from None  # type: ignore[attr-defined]
             raise
 
+    async def _execute_tool_call_async(
+        self,
+        session: ClientSession,
+        tool_call: ToolCall,
+        reqs: Any,
+        status_callback: Any,
+        tool_context: dict[str, Any],
+        is_weather_only: bool,
+        is_hotels_only: bool,
+        is_restaurants_only: bool,
+        is_events_only: bool,
+        is_books_only: bool,
+    ) -> tuple[str, str, Any, Any]:
+        """Execute a single tool call asynchronously and return (tool_name, truncated_result, result_data, result_text)."""
+        from planpilot.utils.resilience import global_cache
+
+        tool_name = tool_call.function.name
+        tool_args = tool_call.function.arguments.copy()
+
+        # Sanitize string args: convert "null", "none", "" to None
+        for k, v in list(tool_args.items()):
+            if isinstance(v, str) and v.strip().lower() in ("null", "none", ""):
+                tool_args[k] = None
+
+        # Departure City Fallback for travel_route
+        if tool_name == "travel_route":
+            src_arg = str(tool_args.get("source", "")).strip()
+            if not src_arg or src_arg.lower() in ("none", "null", "unknown", "city", "my city", "home"):
+                if reqs.origin:
+                    tool_args["source"] = reqs.origin
+
+        # Cuisine Preference Auto-filling for famous_restaurants
+        if tool_name == "famous_restaurants" and not tool_args.get("query"):
+            if reqs.cuisine:
+                tool_args["query"] = f"{reqs.cuisine} food"
+
+        # Determine cache key
+        cache_key_check = None
+        if tool_name == "get_weather":
+            cache_key_check = f"weather:{tool_args.get('city', '').lower().strip()}"
+        elif tool_name == "search_books":
+            cache_key_check = f"books:{tool_args.get('query', '').lower().strip()}"
+        elif tool_name == "famous_restaurants":
+            q_tag = f":{tool_args.get('query', '').lower().strip()}" if tool_args.get("query") else ""
+            cache_key_check = f"restaurants:{tool_args.get('city', '').lower().strip()}{q_tag}"
+        elif tool_name == "find_budget_hotels":
+            b_tier = tool_args.get("budget", "low").lower().strip()
+            cache_key_check = f"hotels:{tool_args.get('city', '').lower().strip()}:{b_tier}"
+        elif tool_name == "travel_route":
+            cache_key_check = f"route:{tool_args.get('source', '').lower().strip()}:{tool_args.get('destination', '').lower().strip()}"
+
+        pre_cached_data, is_stale_pre = global_cache.get(cache_key_check) if cache_key_check else (None, False)
+        was_cached_before = pre_cached_data is not None and not is_stale_pre
+
+        if status_callback:
+            if was_cached_before:
+                await status_callback(f"⚡ [Cache Hit] Fetching stored output for '{tool_name}'...")
+            else:
+                await status_callback(f"🌐 [Live Call] Executing tool '{tool_name}' with args {tool_args}...")
+            await status_callback(
+                f"TOOL_TRACE:start:{tool_name}:{json.dumps(tool_args, separators=(',', ':'))}"
+            )
+
+        try:
+            result = await session.call_tool(tool_name, arguments=tool_args)
+            result_data, result_text = self._decode_mcp_result(result)
+            
+            if tool_name == "get_weather" and isinstance(result_data, dict):
+                tool_context["weather"] = result_data
+            elif tool_name == "travel_route" and isinstance(result_data, dict):
+                tool_context["route"] = result_data
+            elif tool_name == "find_budget_hotels" and isinstance(result_data, list):
+                tool_context["hotels"] = result_data
+            elif tool_name == "famous_restaurants" and isinstance(result_data, list):
+                tool_context["restaurants"] = result_data
+            elif tool_name == "discover_events" and isinstance(result_data, list):
+                tool_context["events"] = result_data
+            elif tool_name == "search_books" and isinstance(result_data, list):
+                tool_context["books"] = result_data
+        except Exception as e:
+            result_data = {"error": f"Tool execution failed: {str(e)}"}
+            result_text = json.dumps({"error": f"Tool execution failed: {str(e)}"})
+
+        is_cache_hit = was_cached_before or "(Cached data" in result_text
+        if status_callback:
+            if is_cache_hit:
+                logger.info(f"⚡ [CACHE HIT] Tool '{tool_name}' response retrieved directly from local cache")
+                await status_callback(f"⚡ [Cache Hit] Retrieved output directly from local cache for '{tool_name}'")
+            else:
+                logger.info(f"🌐 [LIVE API CALL] Tool '{tool_name}' response fetched from external API")
+                await status_callback(f"✅ Received live output from '{tool_name}'")
+            await status_callback(
+                f"TOOL_TRACE:end:{tool_name}:{'cache' if is_cache_hit else 'live'}"
+            )
+
+        query_type = "general"
+        if is_weather_only:
+            query_type = "weather_only"
+        elif is_hotels_only:
+            query_type = "hotels_only"
+        elif is_restaurants_only:
+            query_type = "restaurants_only"
+        elif is_events_only:
+            query_type = "events_only"
+        elif is_books_only:
+            query_type = "books_only"
+
+        if result_data is not None:
+            truncated_result = self._compact_tool_output(
+                result_data, result_text, query_type
+            )
+        elif len(result_text) <= 800:
+            truncated_result = result_text
+        else:
+            try:
+                parsed = json.loads(result_text)
+                if isinstance(parsed, list) and len(parsed) > 2:
+                    preview = json.dumps(parsed[:2], ensure_ascii=False)
+                    truncated_result = (
+                        preview.rstrip("]")
+                        + f", {{\"_note\": \"{len(parsed) - 2} more items available\"}}]"
+                    )
+                else:
+                    truncated_result = result_text[:800] + f"…[truncated at 800 chars]"
+            except Exception:
+                truncated_result = result_text[:800] + f"…[truncated at 800 chars]"
+
+        return tool_name, truncated_result, result_data, result_text
+
     async def run_query(self, user_query: str, status_callback: Any = None, goal: str | None = None) -> str:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
         import time
@@ -740,6 +851,7 @@ class PlanPilotAgent:
             "reflection_input_tokens": 0,
             "reflection_output_tokens": 0,
             "reflection_skipped": False,
+            "response_cached": False,
             "model": (
                 self.settings.openrouter_model
                 if self.settings.llm_provider.lower().strip() == "openrouter"
@@ -749,6 +861,21 @@ class PlanPilotAgent:
         }
         start_time = time.monotonic()
         provider = self.settings.llm_provider.lower().strip()
+
+        # Phase 3: Check response cache before processing
+        prefs = load_preferences()
+        reqs = extract_requirements(user_query, user_prefs=prefs)
+        cache_key = self._get_response_cache_key(user_query, reqs)
+        cached_response, is_stale = global_cache.get(cache_key)
+        
+        if cached_response and not is_stale and self._response_cache_enabled:
+            if status_callback:
+                await status_callback("⚡ [Cache Hit] Retrieved cached response for this query")
+            logger.info(f"[Phase 3] Response cache hit for query: {user_query[:50]}...")
+            if self.last_metrics is not None:
+                self.last_metrics["response_cached"] = True
+                self.last_metrics["latency_sec"] = round(time.monotonic() - start_time, 2)
+            return cached_response
 
         # Ensure system prompt is always the centralized constant (no per-turn rewrite)
         if not self.messages or self.messages[0].get("role") != "system":
@@ -771,6 +898,9 @@ class PlanPilotAgent:
             while history and history[0].get("role") == "tool":
                 history.pop(0)
         self.messages = system_msg + history
+        
+        # Prune to last 3 exchanges to reduce context size
+        self._prune_message_history(max_exchanges=3)
 
         # Detect domain keywords in user query.  Match whole words/phrases:
         # a raw substring check turns "weather" into a restaurant request via
@@ -820,10 +950,6 @@ class PlanPilotAgent:
 
         # Auto-extract preference declarations (e.g., 'I live in Indore', 'Vegetarian') from query prompt
         auto_update_preferences_from_text(user_query)
-
-        # Structured Requirement Extraction
-        prefs = load_preferences()
-        reqs = extract_requirements(user_query, user_prefs=prefs)
 
         # Compact preference context (~30 tokens vs ~180 tokens for verbose version)
         compact_prefs = build_compact_preference_context(prefs)
@@ -981,38 +1107,16 @@ class PlanPilotAgent:
                 if not tool_calls:
                     break
 
-                # Execute tool calls (skip duplicates within the same turn)
+                # Filter duplicates before parallel execution
+                unique_tool_calls = []
                 for tool_call in tool_calls:
                     tool_name = tool_call.function.name
                     tool_args = tool_call.function.arguments
-
-                    # Sanitize string args: convert "null", "none", "" to None
-                    for k, v in list(tool_args.items()):
-                        if isinstance(v, str) and v.strip().lower() in ("null", "none", ""):
-                            tool_args[k] = None
-
-                    # Departure City Fallback for travel_route: if source is omitted or empty, use reqs.origin
-                    if tool_name == "travel_route":
-                        src_arg = str(tool_args.get("source", "")).strip()
-                        if not src_arg or src_arg.lower() in ("none", "null", "unknown", "city", "my city", "home"):
-                            if reqs.origin:
-                                tool_args["source"] = reqs.origin
-                                if status_callback:
-                                    await status_callback(f"Using departure location '{reqs.origin}'...")
-
-                    # Cuisine Preference Auto-filling for famous_restaurants
-                    if tool_name == "famous_restaurants" and not tool_args.get("query"):
-                        if reqs.cuisine:
-                            tool_args["query"] = f"{reqs.cuisine} food"
-
-                    # Deduplicate exact requests, while preserving a matching
-                    # response for this call ID in the provider transcript.
                     call_key = (tool_name, json.dumps(tool_args, sort_keys=True))
+                    
                     if call_key in seen_tool_calls:
                         if status_callback:
-                            await status_callback(
-                                f"Skipping duplicate call to '{tool_name}'..."
-                            )
+                            await status_callback(f"Skipping duplicate call to '{tool_name}'...")
                         self.messages.append(
                             {
                                 "role": "tool",
@@ -1021,124 +1125,60 @@ class PlanPilotAgent:
                                 "tool_call_id": tool_call.id,
                             }
                         )
-                        continue
-                    seen_tool_calls.add(call_key)
-
-                    from planpilot.utils.resilience import global_cache
-
-                    # Determine cache key for checking pre-existing cache hit status
-                    cache_key_check = None
-                    if tool_name == "get_weather":
-                        cache_key_check = f"weather:{tool_args.get('city', '').lower().strip()}"
-                    elif tool_name == "search_books":
-                        cache_key_check = f"books:{tool_args.get('query', '').lower().strip()}"
-                    elif tool_name == "famous_restaurants":
-                        q_tag = f":{tool_args.get('query', '').lower().strip()}" if tool_args.get("query") else ""
-                        cache_key_check = f"restaurants:{tool_args.get('city', '').lower().strip()}{q_tag}"
-                    elif tool_name == "find_budget_hotels":
-                        b_tier = tool_args.get("budget", "low").lower().strip()
-                        cache_key_check = f"hotels:{tool_args.get('city', '').lower().strip()}:{b_tier}"
-                    elif tool_name == "travel_route":
-                        cache_key_check = f"route:{tool_args.get('source', '').lower().strip()}:{tool_args.get('destination', '').lower().strip()}"
-
-                    pre_cached_data, is_stale_pre = global_cache.get(cache_key_check) if cache_key_check else (None, False)
-                    was_cached_before = pre_cached_data is not None and not is_stale_pre
-
-                    if status_callback:
-                        if was_cached_before:
-                            await status_callback(f"⚡ [Cache Hit] Fetching stored output for '{tool_name}'...")
-                        else:
-                            await status_callback(f"🌐 [Live Call] Executing tool '{tool_name}' with args {tool_args}...")
-                        # Stable structured trace event — parsed by the UI regardless of human-readable text changes
-                        await status_callback(
-                            f"TOOL_TRACE:start:{tool_name}:{json.dumps(tool_args, separators=(',', ':'))}"
-                        )
-
-                    try:
-                        # Call the tool through MCP client session
-                        result = await session.call_tool(tool_name, arguments=tool_args)
-                        if hasattr(self, "last_metrics") and self.last_metrics is not None:
-                            self.last_metrics["tool_calls"] += 1
-                        result_data, result_text = self._decode_mcp_result(result)
-                        # Cache parsed output into tool_context for quality gate
-                        if tool_name == "get_weather" and isinstance(result_data, dict):
-                            tool_context["weather"] = result_data
-                        elif tool_name == "travel_route" and isinstance(result_data, dict):
-                            tool_context["route"] = result_data
-                        elif tool_name == "find_budget_hotels" and isinstance(result_data, list):
-                            tool_context["hotels"] = result_data
-                        elif tool_name == "famous_restaurants" and isinstance(result_data, list):
-                            tool_context["restaurants"] = result_data
-                        elif tool_name == "discover_events" and isinstance(result_data, list):
-                            tool_context["events"] = result_data
-                        elif tool_name == "search_books" and isinstance(result_data, list):
-                            tool_context["books"] = result_data
-                    except Exception as e:
-                        result_data = {"error": f"Tool execution failed: {str(e)}"}
-                        result_text = json.dumps({"error": f"Tool execution failed: {str(e)}"})
-
-                    is_cache_hit = was_cached_before or "(Cached data" in result_text
-                    if status_callback:
-                        if is_cache_hit:
-                            logger.info(f"⚡ [CACHE HIT] Tool '{tool_name}' response retrieved directly from local cache")
-                            await status_callback(f"⚡ [Cache Hit] Retrieved output directly from local cache for '{tool_name}'")
-                        else:
-                            logger.info(f"🌐 [LIVE API CALL] Tool '{tool_name}' response fetched from external API")
-                            await status_callback(f"✅ Received live output from '{tool_name}'")
-                        # Stable structured trace end event
-                        await status_callback(
-                            f"TOOL_TRACE:end:{tool_name}:{'cache' if is_cache_hit else 'live'}"
-                        )
-
-                    # --- Context-aware tool output truncation ---
-                    # The LLM can only read what's in its message history — tool_context is a
-                    # Python-side cache invisible to the model. Truncating too aggressively means
-                    # the LLM gets a broken JSON fragment and cannot reason over the actual data.
-                    #
-                    # Limits chosen per query type:
-                    #   single-tool  → 800 chars  (1 tool, give it the full result)
-                    #   travel plan  → 600 chars  (6 tools × 600 ≈ 900 extra tokens max)
-                    #   fallback     → 400 chars  (safety net for unexpected tool calls)
-                    if is_single_tool_query:
-                        _char_limit = 1200
-                    elif has_travel_plan:
-                        _char_limit = 1000
                     else:
-                        _char_limit = 800
+                        seen_tool_calls.add(call_key)
+                        unique_tool_calls.append(tool_call)
 
-                    if result_data is not None:
-                        truncated_result = self._compact_tool_output(
-                            result_data, result_text, _char_limit
+                # Execute all unique tool calls in parallel using asyncio.gather()
+                if unique_tool_calls:
+                    if status_callback:
+                        await status_callback(f"Executing {len(unique_tool_calls)} tools in parallel...")
+                    
+                    tasks = [
+                        self._execute_tool_call_async(
+                            session,
+                            tool_call,
+                            reqs,
+                            status_callback,
+                            tool_context,
+                            is_weather_only,
+                            is_hotels_only,
+                            is_restaurants_only,
+                            is_events_only,
+                            is_books_only,
                         )
-                    elif len(result_text) <= _char_limit:
-                        truncated_result = result_text
-                    else:
-                        # For list responses, prefer a structured summary over a mid-JSON cut.
-                        # This ensures the LLM always sees complete, parseable item objects.
-                        try:
-                            parsed = json.loads(result_text)
-                            if isinstance(parsed, list) and len(parsed) > 2:
-                                # Show first 2 full items + a count note
-                                preview = json.dumps(parsed[:2], ensure_ascii=False)
-                                truncated_result = (
-                                    preview.rstrip("]")
-                                    + f", {{\"_note\": \"{len(parsed) - 2} more items available\"}}]"
-                                )
-                            else:
-                                truncated_result = result_text[:_char_limit] + f"…[truncated at {_char_limit} chars]"
-                        except Exception:
-                            # Not JSON — plain text truncation
-                            truncated_result = result_text[:_char_limit] + f"…[truncated at {_char_limit} chars]"
-
-                    # Append tool response to conversation history
-                    self.messages.append(
-                        {
-                            "role": "tool",
-                            "content": truncated_result,
-                            "name": tool_name,
-                            "tool_call_id": tool_call.id,
-                        }
-                    )
+                        for tool_call in unique_tool_calls
+                    ]
+                    
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
+                    
+                    for idx, result in enumerate(results):
+                        if isinstance(result, Exception):
+                            logger.error(f"Tool execution error: {result}")
+                            tool_call = unique_tool_calls[idx]
+                            self.messages.append(
+                                {
+                                    "role": "tool",
+                                    "content": json.dumps({"error": str(result)}),
+                                    "name": tool_call.function.name,
+                                    "tool_call_id": tool_call.id,
+                                }
+                            )
+                        else:
+                            tool_name, truncated_result, result_data, result_text = result
+                            tool_call = unique_tool_calls[idx]
+                            
+                            if hasattr(self, "last_metrics") and self.last_metrics is not None:
+                                self.last_metrics["tool_calls"] += 1
+                            
+                            self.messages.append(
+                                {
+                                    "role": "tool",
+                                    "content": truncated_result,
+                                    "name": tool_name,
+                                    "tool_call_id": tool_call.id,
+                                }
+                            )
 
             # --- REFLECTION / FINAL ANSWER SELECTION ---
             # Retrieve the latest assistant message content with actual text
@@ -1252,6 +1292,11 @@ class PlanPilotAgent:
             # Remove any temporary system messages we added during this turn
             self.messages = [m for idx, m in enumerate(self.messages) if m.get("role") != "system" or idx == 0]
 
+            # Phase 3: Cache the final response
+            if self._response_cache_enabled:
+                global_cache.set(cache_key, final_answer, ttl_seconds=3600.0)
+                logger.info(f"[Phase 3] Cached response for query: {user_query[:50]}...")
+
             if hasattr(self, "last_metrics") and self.last_metrics is not None:
                 self.last_metrics["latency_sec"] = round(time.monotonic() - start_time, 2)
                 logger.info(
@@ -1262,7 +1307,10 @@ class PlanPilotAgent:
                     f"reflect_in={self.last_metrics['reflection_input_tokens']} "
                     f"reflect_out={self.last_metrics['reflection_output_tokens']} "
                     f"reflect_skipped={self.last_metrics['reflection_skipped']} "
-                    f"latency={self.last_metrics['latency_sec']}s"
+                    f"cached={self.last_metrics['response_cached']} "
+                    f"latency={self.last_metrics['latency_sec']}s "
+                    f"[Phase 2: Parallel Tool Execution Enabled] "
+                    f"[Phase 3: Response Caching Enabled]"
                 )
 
             return final_answer

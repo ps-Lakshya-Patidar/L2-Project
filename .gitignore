@@ -38,6 +38,10 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
+# Local-only folders — not needed to run the project
+docs/
+tests/
+
 # OS generated files
 .DS_Store
 Thumbs.db

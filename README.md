@@ -226,6 +226,4 @@ For all other cities, live OSM and DuckDuckGo data is used.
 
 ---
 
-## 📄 License
 
-MIT © Lakshya Patidar

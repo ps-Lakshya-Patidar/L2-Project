@@ -1,0 +1,234 @@
+{
+  "_comment": "Curated fallback restaurant data. No prices or ratings - those change. Edit here without touching source code.",
+  "udaipur": [
+    {
+      "restaurant_name": "Ambrai Restaurant",
+      "speciality": "Rajasthani and North Indian",
+      "location": "Amet Haveli, Waterfront Lake Pichola",
+      "why_popular": "Famous waterfront dining with panoramic views of City Palace and Lake Palace.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Upre by 1505",
+      "speciality": "Mughlai and Traditional Mewari",
+      "location": "Lake Pichola Hotel Rooftop",
+      "why_popular": "Iconic rooftop restaurant overlooking Lake Pichola and the illuminated City Palace.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Natraj Dining Hall and Restaurant",
+      "speciality": "Authentic Rajasthani and Gujarati Thali",
+      "location": "City Station Road",
+      "why_popular": "Legendary spot for authentic unlimited traditional thalis in Udaipur.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Tribute Restaurant",
+      "speciality": "Rajasthani, Continental and Tandoori",
+      "location": "Fateh Sagar Lake Waterfront, Ambamata",
+      "why_popular": "Popular lakeside restaurant with stunning lake view.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "1559 AD",
+      "speciality": "Royal Rajputana and Continental",
+      "location": "Near Fateh Sagar Lake",
+      "why_popular": "Classic colonial bungalow setting serving royal Mewar dishes.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ],
+  "new york": [
+    {
+      "restaurant_name": "Junoon",
+      "speciality": "Modern Michelin-Starred Indian Cuisine",
+      "location": "Flatiron District, 19 West 24th Street",
+      "why_popular": "Renowned Michelin-starred modern Indian fine dining experience.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Dhamaka",
+      "speciality": "Unapologetic Provincial Indian Cuisine",
+      "location": "Essex Market, 119 Delancey Street",
+      "why_popular": "James Beard award-winning regional Indian dishes from lesser-known states.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Saravanaa Bhavan",
+      "speciality": "Authentic South Indian Vegetarian (Dosa, Idli, Thali)",
+      "location": "Curry Hill, 81 Lexington Avenue",
+      "why_popular": "Iconic world-famous South Indian vegetarian restaurant in NYC.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Bungalow NYC",
+      "speciality": "Regional Indian Heritage Cuisine by Chef Vikas Khanna",
+      "location": "24 First Avenue, East Village",
+      "why_popular": "Acclaimed dining exploring clubhouse cuisine of historic India.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Tamarind Tribeca",
+      "speciality": "Contemporary North and Coastal Indian",
+      "location": "99 Hudson Street, Tribeca",
+      "why_popular": "Upscale, elegant Indian fine dining in downtown Manhattan.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Katz Delicatessen",
+      "speciality": "Classic New York Deli (Pastrami on Rye)",
+      "location": "205 E Houston Street, Lower East Side",
+      "why_popular": "Iconic NYC deli since 1888, famous for its legendary pastrami sandwiches.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Joe Pizza Greenwich Village",
+      "speciality": "Classic New York-Style Pizza",
+      "location": "7 Carmine Street, Greenwich Village",
+      "why_popular": "The quintessential NYC slice - thin crust, simple, perfect.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ],
+  "jaipur": [
+    {
+      "restaurant_name": "Laxmi Mishthan Bhandar LMB",
+      "speciality": "Rajasthani Royal Thali, Ghewar and Pyaaz Kachori",
+      "location": "Johari Bazar, Pink City",
+      "why_popular": "Historic establishment famous across India for Rajasthani sweets and thalis.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Handi Restaurant",
+      "speciality": "Mughlai and Handi Meat",
+      "location": "MI Road, City Centre",
+      "why_popular": "Legendary meat and barbecue specialties in Jaipur.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Rawat Mishthan Bhandar",
+      "speciality": "Famous Mawa Kachori and Pyaaz Kachori",
+      "location": "Station Road",
+      "why_popular": "World-famous kachoris and breakfast delicacies in Jaipur.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "1135 AD",
+      "speciality": "Royal Rajputana Palace Thali",
+      "location": "Amer Fort, Amer",
+      "why_popular": "Fine dining inside the historic Amer Fort with silver dinnerware.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ],
+  "ahmedabad": [
+    {
+      "restaurant_name": "Agashiye The House of MG",
+      "speciality": "Royal Gujarati Thali",
+      "location": "Lal Darwaja, City Centre",
+      "why_popular": "Iconic rooftop Gujarati thali experience in a restored heritage mansion.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Vishalla",
+      "speciality": "Traditional Village Style Gujarati Feast",
+      "location": "Vasna Toll Naka",
+      "why_popular": "Ethnic village ambiance serving authentic regional food on tree-leaf plates.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Manek Chowk Street Food Market",
+      "speciality": "Gwalior Dosa, Pav Bhaji, Chocolate Sandwiches",
+      "location": "Old City, Manek Chowk",
+      "why_popular": "Bustling night street food market renowned for late-night inventive delicacies.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Das Khaman",
+      "speciality": "Khaman, Dhokla and Gujarati Snacks",
+      "location": "CG Road, Navrangpura",
+      "why_popular": "Iconic spot for authentic Gujarati street snacks and breakfast items.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ],
+  "mumbai": [
+    {
+      "restaurant_name": "Leopold Cafe",
+      "speciality": "Continental, Indian and Parsi Cuisine",
+      "location": "Shahid Bhagat Singh Road, Colaba",
+      "why_popular": "Historic cafe since 1871, a Colaba landmark frequented by locals and travellers.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Trishna",
+      "speciality": "Coastal Seafood and Indian Cuisine",
+      "location": "7 Ropewalk Lane, Kala Ghoda, Fort",
+      "why_popular": "Iconic seafood restaurant famed for its butter-garlic crab.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Bademiya",
+      "speciality": "Late Night Street Food (Seekh Kebabs, Rolls)",
+      "location": "Tulloch Road, Colaba",
+      "why_popular": "Legendary late-night street kebab stall, a Mumbai institution since 1946.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Cafe Madras",
+      "speciality": "Authentic South Indian (Idli, Dosa, Filter Coffee)",
+      "location": "India Coffee House, Matunga",
+      "why_popular": "Classic South Indian breakfast landmark in the heart of Matunga.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ],
+  "delhi": [
+    {
+      "restaurant_name": "Karims Old Delhi",
+      "speciality": "Mughlai (Nihari, Seekh Kebab, Korma)",
+      "location": "16 Jama Masjid, Gali Kababian, Old Delhi",
+      "why_popular": "Legendary Mughal-era eatery since 1913, a must-visit in Old Delhi.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Paranthe Wali Gali",
+      "speciality": "Stuffed Paranthas (30 varieties)",
+      "location": "Chandni Chowk, Old Delhi",
+      "why_popular": "Historic lane selling stuffed paranthas with heritage recipes since 1875.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Indian Accent",
+      "speciality": "Modern Indian Fine Dining",
+      "location": "The Manor Hotel, Friends Colony",
+      "why_popular": "Consistently rated among Asia best restaurants for inventive Indian cuisine.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Moti Mahal",
+      "speciality": "Butter Chicken and Dal Makhani",
+      "location": "3704 Netaji Subhash Marg, Daryaganj",
+      "why_popular": "Birthplace of Butter Chicken and Dal Makhani - two iconic Indian dishes.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ],
+  "goa": [
+    {
+      "restaurant_name": "Fishmens Wharf",
+      "speciality": "Goan Seafood and Fish Curry",
+      "location": "Cavelossim, South Goa",
+      "why_popular": "Iconic waterfront seafood restaurant serving authentic Goan fish curry.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Pousada by the Beach",
+      "speciality": "Portuguese-Goan Fusion",
+      "location": "Calangute Beach Road, North Goa",
+      "why_popular": "Classic Goan ambiance serving traditional Goan-Portuguese cuisine.",
+      "source": "Curated Culinary Knowledge"
+    },
+    {
+      "restaurant_name": "Gunpowder Goa",
+      "speciality": "South Indian and Keralan Cuisine",
+      "location": "Near Bardez, Assagao, North Goa",
+      "why_popular": "Beloved boutique restaurant serving earthy, home-style South Indian cuisine.",
+      "source": "Curated Culinary Knowledge"
+    }
+  ]
+}

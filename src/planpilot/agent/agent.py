@@ -7,12 +7,18 @@ manages tool-calling loops, and performs a single reflection pass before returni
 from __future__ import annotations
 
 import asyncio
+import copy
 import functools
+import hashlib
 import json
+import os
 import re
 import sys
+import time
+from pathlib import Path
 from typing import Any
 
+import httpx
 import ollama
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -22,7 +28,6 @@ from planpilot.utils.config import get_settings
 from planpilot.utils.logger import logger
 from planpilot.utils.preferences import (
     load_preferences,
-    build_preference_context,
     build_compact_preference_context,
     auto_update_preferences_from_text,
 )
@@ -30,7 +35,6 @@ from planpilot.utils.validation import (
     extract_requirements,
     validate_and_enforce_sections,
     UserRequirements,
-    MANDATORY_SECTIONS,
 )
 from planpilot.utils.resilience import global_cache
 
@@ -38,47 +42,55 @@ from planpilot.utils.resilience import global_cache
 # Centralized prompt constants — single source of truth, no runtime duplication
 # ---------------------------------------------------------------------------
 
-_SYSTEM_PROMPT = """You are PlanPilot, an AI Trip Planner using 6 MCP tools:
-1. get_weather — Current weather + 3-day forecast
-2. travel_route — Distance, modes, duration, cost
-3. find_budget_hotels — Hotel recommendations
-4. famous_restaurants — Local cuisine & ratings
-5. discover_events — Concerts, exhibitions, festivals
-6. search_books — Destination books
+_SYSTEM_PROMPT = """You are PlanPilot, an AI Trip Planner powered by 6 MCP tools:
+1. get_weather — Current weather & 3-day forecast
+2. travel_route — Best travel route, distance, transport modes, duration & cost
+3. find_budget_hotels — Hotel recommendations & price tiers
+4. famous_restaurants — Local/requested cuisine & ratings
+5. discover_events — Upcoming music concerts, festivals & live events
+6. search_books — Destination history & travel books
 
 OUTPUT RULES:
-- SINGLE-TOPIC: Answer only the requested topic. Never output 11-section format.
-- FULL TRAVEL PLANS: Output all 11 sections (Overview, Weather, How to Reach, Budget, Accommodation, Restaurants, Events, History, Books, Itinerary, Tips).
+- SINGLE-TOPIC QUERIES: If the user asks about a specific topic (e.g. only weather, only restaurants, only hotels), answer ONLY that requested topic directly.
+- FULL TRAVEL PLANS: Output ONLY these 6 sections with clean markdown headers:
+  # Weather
+  # Best Travel Route
+  # Hotel Accommodations
+  # Famous Restaurants
+  # Upcoming Events
+  # Recommended Books
 
-CRITICAL:
-- NEVER invent data. Use only tool outputs.
-- If tool returns empty, state "Data unavailable"
-- Include units: °C, km/h, km, hours, ₹/$
-- Use markdown headers and bullet points
+TOOL CALLING STRATEGY:
+- Multi-domain / Travel Plan queries: Call ALL needed tools simultaneously in your very first response in parallel. Never call tools one-by-one sequentially.
+- Single-topic queries: Call only the single requested tool.
+
+STRICT CONSTRAINTS:
+- NEVER invent or hallucinate data. Ground all answers strictly in tool outputs.
+- If data is unavailable from tools, state "Data unavailable".
+- Include proper units: °C, km/h, km, hours, ₹/$.
+- Do NOT generate extra filler sections (no Destination Overview, no Estimated Budget tables, no generic travel tips, no speculative itineraries).
 """
 
-# Lightweight verification prompt for the reflection pass (~80 tokens vs ~280 tokens)
+# Lightweight verification prompt for the reflection pass
 _REFLECT_TRAVEL = """
 Review the travel guide.
 
 Check:
-1. All required sections exist.
-2. No hallucinated facts.
-3. Route recommendations are valid.
-4. Cuisine matches user requirements.
-5. Hotels, events, weather and books come from tool outputs.
+1. It contains only the 6 tool sections (# Weather, # Best Travel Route, # Hotel Accommodations, # Famous Restaurants, # Upcoming Events, # Recommended Books).
+2. No hallucinated data or filler sections.
+3. Information matches tool outputs accurately.
 
 If everything is correct reply:
 
 OK
 
-Otherwise return only corrected sections.
+Otherwise return the clean corrected version only.
 """
 _REFLECT_SINGLE = """
 Review the answer.
 
 Check:
-1. It answers only the requested topic.
+1. It answers only the requested topic directly.
 2. No hallucinated facts.
 3. Information matches tool output.
 
@@ -114,9 +126,6 @@ class LLMResponse:
         self.message = message
 
 
-import os
-from pathlib import Path
-
 class PlanPilotAgent:
     """Agent orchestrator connecting LLM to the MCP Tool Server."""
 
@@ -144,7 +153,6 @@ class PlanPilotAgent:
 
     def _get_response_cache_key(self, user_query: str, reqs: UserRequirements) -> str:
         """Generate a cache key for response caching based on normalized query + requirements."""
-        import hashlib
         normalized_query = user_query.lower().strip()
         req_tuple = (
             reqs.destination.lower().strip(),
@@ -325,79 +333,91 @@ class PlanPilotAgent:
     @staticmethod
     def _compact_tool_output(data: Any | None, raw_text: str, query_type: str = "general", char_limit: int | None = None) -> str:
         """Filter irrelevant fields based on query intent before truncating."""
-        limit = char_limit if char_limit is not None else 1000
+        limit = char_limit if char_limit is not None else 500
         if data is None:
             if len(raw_text) <= limit:
                 return raw_text
             return json.dumps({"_truncated": True, "preview": raw_text[:limit]})
 
-        # Query-aware field filtering to reduce token waste
-        if query_type == "weather_only" and isinstance(data, dict):
-            filtered = {
+        if isinstance(data, dict) and "temperature_c" in data:
+            # Weather dict: compact current + full 3-day outlook
+            daily = data.get("daily_forecast_3_days", [])
+            compact_daily = [
+                {
+                    "date": d.get("date"),
+                    "high": d.get("temp_max_c"),
+                    "low": d.get("temp_min_c"),
+                    "rain_chance": d.get("max_rain_probability_percent", 0),
+                    "condition": d.get("condition", "Partly Cloudy")
+                }
+                for d in daily[:3]
+            ]
+            fc_12h = data.get("forecast_next_12h", {})
+            return json.dumps({
                 "city": data.get("city"),
-                "temperature_c": data.get("temperature_c"),
-                "windspeed_kmh": data.get("windspeed_kmh"),
-                "forecast_next_12h": data.get("forecast_next_12h"),
-                "daily_forecast_3_days": data.get("daily_forecast_3_days")
-            }
-            return json.dumps(filtered, ensure_ascii=False)
+                "current_temp": data.get("temperature_c"),
+                "wind_kmh": data.get("windspeed_kmh"),
+                "condition": data.get("weather_condition", "Clear"),
+                "next_12h_rain_chance": fc_12h.get("max_rain_probability_percent", 0),
+                "forecast_3_days": compact_daily
+            }, ensure_ascii=False)
 
+        if isinstance(data, dict) and "distance_km" in data:
+            # Route dict: compact transit summary
+            return json.dumps({
+                "source": data.get("source"),
+                "destination": data.get("destination"),
+                "distance": data.get("distance_km"),
+                "travel_time": data.get("travel_time"),
+                "recommended_mode": data.get("recommended_mode"),
+                "options": data.get("transport_options", [])
+            }, ensure_ascii=False)
+
+        if query_type == "weather_only" and isinstance(data, dict):
+            filtered = {"city": data.get("city"), "temperature_c": data.get("temperature_c"), "forecast_next_12h": data.get("forecast_next_12h")}
+            return json.dumps(filtered, ensure_ascii=False)
         elif query_type == "hotels_only" and isinstance(data, list):
-            filtered = [{
-                "hotel_name": h.get("hotel_name"),
-                "price_range": h.get("price_range"),
-                "rating": h.get("rating"),
-                "location": h.get("location")
-            } for h in data[:3]]
+            filtered = [{"hotel_name": h.get("hotel_name"), "price_range": h.get("price_range"), "rating": h.get("rating")} for h in data[:2]]
             return json.dumps(filtered, ensure_ascii=False)
-
         elif query_type == "restaurants_only" and isinstance(data, list):
-            filtered = [{
-                "restaurant_name": r.get("restaurant_name"),
-                "speciality": r.get("speciality"),
-                "rating": r.get("rating"),
-                "location": r.get("location")
-            } for r in data[:3]]
+            filtered = [{"restaurant_name": r.get("restaurant_name"), "speciality": r.get("speciality"), "rating": r.get("rating")} for r in data[:2]]
             return json.dumps(filtered, ensure_ascii=False)
-
         elif query_type == "events_only" and isinstance(data, list):
-            filtered = [{
-                "source": e.get("source"),
-                "summary": e.get("summary")
-            } for e in data[:3]]
+            filtered = [{"source": e.get("source"), "summary": e.get("summary")} for e in data[:2]]
             return json.dumps(filtered, ensure_ascii=False)
-
         elif query_type == "books_only" and isinstance(data, list):
-            filtered = [{
-                "title": b.get("title"),
-                "author": b.get("author"),
-                "year": b.get("first_publish_year")
-            } for b in data[:2]]
+            filtered = [{"title": b.get("title"), "author": b.get("author")} for b in data[:1]]
             return json.dumps(filtered, ensure_ascii=False)
+        elif query_type == "travel_plan" and isinstance(data, list):
+            compact_items = []
+            for item in data[:3]:
+                if isinstance(item, dict):
+                    filtered_item = {k: v for k, v in item.items() if k in (
+                        "hotel_name", "price_range", "rating", "review_rating", "location", "area", "hotel_class",
+                        "restaurant_name", "speciality",
+                        "source", "summary", "venue", "date",
+                        "title", "author", "first_publish_year"
+                    ) and v is not None}
+                    compact_items.append(filtered_item or item)
+                else:
+                    compact_items.append(item)
+            return json.dumps(compact_items, ensure_ascii=False)
 
-        # Default: use existing truncation logic
         serialized = json.dumps(data, ensure_ascii=False)
         if len(serialized) <= limit:
             return serialized
-
         if isinstance(data, list):
-            preview: list[Any] = []
+            preview = []
             for item in data:
                 candidate = json.dumps(preview + [item], ensure_ascii=False)
                 if len(candidate) > limit and preview:
                     break
-                if len(candidate) > limit:
-                    break
                 preview.append(item)
-            if len(preview) < len(data):
-                preview.append({"_note": f"{len(data) - len(preview)} more items omitted"})
             return json.dumps(preview, ensure_ascii=False)
-
         return json.dumps({"_truncated": True, "preview": serialized[:limit]})
 
     def _sanitize_tool_schema_for_groq(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """Sanitize JSON schemas to comply with Groq/OpenAI tool-calling specifications."""
-        import copy
         sanitized = copy.deepcopy(tools)
         for tool in sanitized:
             func = tool.get("function", {})
@@ -426,11 +446,9 @@ class PlanPilotAgent:
         return sanitized
 
     def _call_openrouter(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, tool_choice: str = "auto"
     ) -> LLMResponse:
         """Helper to invoke OpenRouter API with OpenAI-compatible schemas, tool calling, and backoff retry."""
-        import time
-        import httpx
 
         # 1. Format messages for OpenRouter (OpenAI-compatible)
         openrouter_messages = self._prepare_groq_messages(messages)
@@ -451,7 +469,7 @@ class PlanPilotAgent:
         }
         if tools:
             payload["tools"] = self._sanitize_tool_schema_for_groq(tools)
-            payload["tool_choice"] = "auto"
+            payload["tool_choice"] = tool_choice
 
         with httpx.Client(timeout=60.0) as client:
             max_retries = 3
@@ -473,8 +491,12 @@ class PlanPilotAgent:
                         raise ValueError(
                             "🔑 Invalid or Expired OpenRouter API Key! Please verify your key at https://openrouter.ai/keys."
                         )
-                    # If model doesn't support tools, fallback to no-tools
-                    if ("tools" in resp.text.lower() or "not supported" in resp.text.lower()) and "tools" in payload:
+                    # If model doesn't support required tool_choice, fallback to auto
+                    if "tool_choice" in resp.text.lower() and payload.get("tool_choice") == "required":
+                        payload["tool_choice"] = "auto"
+                        resp = client.post(url, json=payload, headers=headers)
+                    # If model doesn't support tools at all, fallback to no-tools
+                    elif ("tools" in resp.text.lower() or "not supported" in resp.text.lower()) and "tools" in payload:
                         print(f"Model '{payload['model']}' tool calling issue on OpenRouter. Falling back to text tool calling...", flush=True)
                         payload.pop("tools", None)
                         payload.pop("tool_choice", None)
@@ -514,6 +536,8 @@ class PlanPilotAgent:
 
         if not tool_calls and content:
             tool_calls = self._parse_text_tool_calls(content)
+            if tool_calls:
+                content = ""
 
         # Track usage metrics
         usage = data.get("usage", {})
@@ -531,11 +555,9 @@ class PlanPilotAgent:
         stop=stop_after_attempt(5), wait=wait_exponential(multiplier=2, min=5, max=60), reraise=True
     )
     def _call_llm_with_retry(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None, tool_choice: str = "auto"
     ) -> LLMResponse:
         """Helper to invoke the configured LLM provider with exponential backoff on failure."""
-        import time
-        import httpx
 
         provider = self.settings.llm_provider.lower().strip()
 
@@ -546,7 +568,7 @@ class PlanPilotAgent:
                     "LLM_PROVIDER is set to 'openrouter', but OPENROUTER_API_KEY is not configured. "
                     "Please add a valid API key to your .env file or set environment variable OPENROUTER_API_KEY."
                 )
-            return self._call_openrouter(messages, tools)
+            return self._call_openrouter(messages, tools, tool_choice=tool_choice)
         else:
             # Default to Ollama
             ollama_messages = self._prepare_ollama_messages(messages)
@@ -581,6 +603,8 @@ class PlanPilotAgent:
 
             if not tool_calls and content:
                 tool_calls = self._parse_text_tool_calls(content)
+                if tool_calls:
+                    content = ""
 
             # Track metrics if enabled
             if isinstance(resp, dict):
@@ -631,18 +655,53 @@ class PlanPilotAgent:
 
         def _try_parse_json(block: str) -> None:
             """Attempt to parse a JSON block and extract tool call(s) from it."""
-            for raw in (block, block.replace("'", '"')):
+            block = block.strip()
+            candidates = [block, block.replace("'", '"')]
+            
+            # Clean leading/trailing mismatched brackets e.g. "[[ ... ]" -> "[ ... ]"
+            temp = block
+            while temp.startswith("[[") and not temp.endswith("]]"):
+                temp = temp[1:]
+                candidates.extend([temp, temp.replace("'", '"')])
+            temp = block
+            while temp.endswith("]]") and not temp.startswith("[["):
+                temp = temp[:-1]
+                candidates.extend([temp, temp.replace("'", '"')])
+
+            data = None
+            for raw in candidates:
                 try:
                     data = json.loads(raw)
                     break
                 except Exception:
-                    data = None
+                    pass
+
             if data is None:
+                # Fallback: search for individual {"name": ...} objects directly
+                for obj_match in re.finditer(r'\{[^{}]*"name"\s*:\s*"([^"]+)"[^{}]*\}', block):
+                    try:
+                        obj = json.loads(obj_match.group(0))
+                        if isinstance(obj, dict) and "name" in obj:
+                            args = obj.get("arguments") or obj.get("args") or obj.get("parameters") or {}
+                            _add(obj["name"], args)
+                    except Exception:
+                        pass
                 return
-            items = data if isinstance(data, list) else [data]
-            for item in items:
+
+            # Flatten arbitrary nested lists (e.g. [[{...}]])
+            flat_items = []
+            queue = [data] if not isinstance(data, list) else list(data)
+            while queue:
+                curr = queue.pop(0)
+                if isinstance(curr, list):
+                    queue.extend(curr)
+                elif isinstance(curr, dict):
+                    flat_items.append(curr)
+
+            for item in flat_items:
                 if isinstance(item, dict) and "name" in item:
-                    _add(item["name"], item.get("arguments", item.get("args", {})))
+                    args = item.get("arguments") or item.get("args") or item.get("parameters") or {}
+                    _add(item["name"], args)
 
         def _coerce(value: str) -> Any:
             """Convert a string value to its proper Python type."""
@@ -656,9 +715,19 @@ class PlanPilotAgent:
                 return None
             return value
 
-        # --- Strategy 1: JSON block parsing ---
-        for block_match in re.finditer(r"(\[[\s\S]*?\]|\{[\s\S]*?\})", content):
+        # --- Strategy 1: JSON block parsing with multi-bracket support ---
+        for block_match in re.finditer(r"(\[+[\s\S]*?\]+|\{[\s\S]*?\})", content):
             _try_parse_json(block_match.group(1).strip())
+
+        # --- Strategy 1.5: Direct tool object search if broad JSON parse missed anything ---
+        if not tool_calls:
+            for obj_match in re.finditer(r'\{\s*"name"\s*:\s*"(?:get_weather|search_books|discover_events|find_budget_hotels|travel_route|famous_restaurants)"[\s\S]*?\}', content):
+                try:
+                    obj = json.loads(obj_match.group(0))
+                    args = obj.get("arguments") or obj.get("args") or obj.get("parameters") or {}
+                    _add(obj["name"], args)
+                except Exception:
+                    pass
 
         # --- Strategy 2: Parenthesized call syntax ---
         # Only run if strategy 1 produced nothing (avoids double-counting)
@@ -688,6 +757,37 @@ class PlanPilotAgent:
                         args[k] = _coerce(v)
 
                 _add(tname, args)
+
+        # --- Strategy 3: XML / Tagged tool call syntax (Nemotron / Qwen format) ---
+        if not tool_calls:
+            xml_blocks = re.finditer(
+                r"(?:<tool_call>[\s\S]*?</tool_call>|<function[=\s](?:name=)?[\"']?([a-zA-Z0-9_]+)[\"']?>[\s\S]*?</function>)",
+                content,
+                re.IGNORECASE,
+            )
+            for m in xml_blocks:
+                block = m.group(0)
+                # Extract function name: <function=find_budget_hotels> or <function name="find_budget_hotels">
+                fn_match = re.search(
+                    r"<function[=\s](?:name=)?[\"']?([a-zA-Z0-9_]+)[\"']?>", block, re.IGNORECASE
+                )
+                if not fn_match:
+                    continue
+                fn_name = fn_match.group(1).strip()
+
+                # Extract parameters: <parameter=city>Udaipur</parameter> or <parameter name="city">Udaipur</parameter>
+                args: dict[str, Any] = {}
+                param_matches = re.finditer(
+                    r"<parameter[=\s](?:name=)?[\"']?([a-zA-Z0-9_]+)[\"']?>([\s\S]*?)</parameter>",
+                    block,
+                    re.IGNORECASE,
+                )
+                for p in param_matches:
+                    p_name = p.group(1).strip()
+                    p_val = p.group(2).strip()
+                    args[p_name] = _coerce(p_val)
+
+                _add(fn_name, args)
 
         return tool_calls
 
@@ -721,9 +821,9 @@ class PlanPilotAgent:
         is_restaurants_only: bool,
         is_events_only: bool,
         is_books_only: bool,
+        has_travel_plan: bool = False,
     ) -> tuple[str, str, Any, Any]:
         """Execute a single tool call asynchronously and return (tool_name, truncated_result, result_data, result_text)."""
-        from planpilot.utils.resilience import global_cache
 
         tool_name = tool_call.function.name
         tool_args = tool_call.function.arguments.copy()
@@ -815,6 +915,8 @@ class PlanPilotAgent:
             query_type = "events_only"
         elif is_books_only:
             query_type = "books_only"
+        elif has_travel_plan:
+            query_type = "travel_plan"
 
         if result_data is not None:
             truncated_result = self._compact_tool_output(
@@ -840,7 +942,6 @@ class PlanPilotAgent:
 
     async def run_query(self, user_query: str, status_callback: Any = None, goal: str | None = None) -> str:
         """Run the main agent loop: request -> tool detection -> tool execution -> reflection -> response."""
-        import time
         self.last_metrics = {
             "input_tokens": 0,
             "output_tokens": 0,
@@ -1054,8 +1155,6 @@ class PlanPilotAgent:
                 if status_callback:
                     await status_callback(f"Reasoning (Step {iteration})...")
 
-                # Once every required domain has returned, force the final
-                # natural-language answer instead of another tool loop.
                 called_tools = {k[0] for k in seen_tool_calls}
                 all_required_tools_called = bool(required_tools) and required_tools.issubset(called_tools)
 
@@ -1063,9 +1162,12 @@ class PlanPilotAgent:
                 if is_general_query or all_required_tools_called:
                     tools_for_step = None
 
+                # On step 1 for non-general queries, force tool calling if tools are offered
+                step_tool_choice = "required" if (iteration == 1 and tools_for_step is not None and not is_general_query) else "auto"
+
                 # Invoke LLM
                 response = await self._run_sync(
-                    self._call_llm_with_retry, self.messages, tools=tools_for_step
+                    self._call_llm_with_retry, self.messages, tools=tools_for_step, tool_choice=step_tool_choice
                 )
                 message = response.message
                 tool_calls = getattr(message, "tool_calls", None)
@@ -1146,6 +1248,7 @@ class PlanPilotAgent:
                             is_restaurants_only,
                             is_events_only,
                             is_books_only,
+                            has_travel_plan,
                         )
                         for tool_call in unique_tool_calls
                     ]
@@ -1181,12 +1284,19 @@ class PlanPilotAgent:
                             )
 
             # --- REFLECTION / FINAL ANSWER SELECTION ---
-            # Retrieve the latest assistant message content with actual text
-            assistant_messages = [m for m in self.messages if m.get("role") == "assistant" and m.get("content") and str(m.get("content")).strip()]
+            # Retrieve the latest assistant message content with actual human text (excluding tool call blocks and XML tags)
+            assistant_messages = [
+                m for m in self.messages
+                if m.get("role") == "assistant"
+                and m.get("content")
+                and str(m.get("content")).strip()
+                and not m.get("tool_calls")
+                and not str(m.get("content")).strip().startswith(("{", "[", "```json", "`{", "[[{", "<tool_call", "<function"))
+            ]
             if assistant_messages:
                 last_answer = assistant_messages[-1].get("content") or ""
             else:
-                # If assistant text is empty but tool_context has fetched data (e.g. weather/restaurants/hotels), format direct response
+                # If assistant text is empty or only had tool calls, format direct response from tool_context
                 if tool_context.get("weather") and is_weather_only:
                     w = tool_context["weather"]
                     city_name = w.get("city", reqs.destination)
@@ -1200,6 +1310,22 @@ class PlanPilotAgent:
                         f"- **Wind Speed:** {wind} km/h\n"
                         f"- **Rain Probability:** {rain_p}%\n\n"
                         f"*(Note: Values reflect current real-time meteorological conditions).* "
+                    )
+                elif tool_context.get("route") and is_route_only:
+                    r = tool_context["route"]
+                    src = r.get("source", reqs.origin or "Origin")
+                    dest = r.get("destination", reqs.destination or "Destination")
+                    dist = r.get("distance_km", "")
+                    time_est = r.get("travel_time", "")
+                    rec = r.get("recommended_mode", "Commercial Airline Flight")
+                    opts = r.get("transport_options", [])
+                    opt_lines = [f"- **{opt.get('mode', 'Transit')}:** {opt.get('option', '')} — *Duration: {opt.get('duration', time_est)}* | Cost: {opt.get('approx_cost', 'Variable')}" for opt in opts]
+                    last_answer = (
+                        f"### Best Travel Route: {src} to {dest}\n"
+                        f"- **Distance:** {dist}\n"
+                        f"- **Travel Time:** {time_est}\n"
+                        f"- **Recommended Mode:** {rec}\n\n"
+                        f"**Transport Options:**\n" + ("\n".join(opt_lines) if opt_lines else "- Flight travel recommended.")
                     )
                 elif tool_context.get("restaurants") and is_restaurants_only:
                     r_list = tool_context["restaurants"]
@@ -1215,6 +1341,20 @@ class PlanPilotAgent:
                     for h in h_list[:5]:
                         lines.append(f"- **{h.get('hotel_name')}** ({h.get('hotel_class', 'Hotel')}) — *Price: {h.get('price_range', 'Budget')}* | Rating: {h.get('review_rating', '4.3 ⭐')}")
                     last_answer = "\n".join(lines)
+                elif tool_context.get("events") and is_events_only:
+                    e_list = tool_context["events"]
+                    city_name = reqs.destination
+                    lines = [f"### Upcoming Events in {city_name}\n"]
+                    for e in e_list[:5]:
+                        lines.append(f"- **{e.get('source', 'Event')}:** {e.get('summary', '')}")
+                    last_answer = "\n".join(lines)
+                elif tool_context.get("books") and is_books_only:
+                    b_list = tool_context["books"]
+                    city_name = reqs.destination
+                    lines = [f"### Recommended Books for {city_name}\n"]
+                    for b in b_list[:5]:
+                        lines.append(f"- **{b.get('title', 'Book')}** by {b.get('author', 'Unknown')} ({b.get('first_publish_year', 'N/A')})")
+                    last_answer = "\n".join(lines)
                 else:
                     last_answer = self.messages[-1].get("content") or ""
 
@@ -1224,6 +1364,7 @@ class PlanPilotAgent:
                 not self.settings.agent_reflection_enabled
                 or is_single_tool_query
                 or is_general_query
+                or has_travel_plan  # Skip reflection for full travel plans
             ):
                 final_answer = last_answer
                 if self.last_metrics is not None:
@@ -1231,11 +1372,11 @@ class PlanPilotAgent:
                 logger.debug("Reflection skipped — single-tool or general query")
             else:
                 if status_callback:
-                    await status_callback("Verifying response quality...")
+                    await status_callback("Polishing and personalising response...")
 
                 # Lightweight reflection: send query + draft only (no repeated tool outputs)
                 # Tool data is already embedded in the draft; repeating it wastes 600-1800 tokens
-                ref_sys = _REFLECT_TRAVEL if (has_travel_plan or reqs.destination != "Destination") else _REFLECT_SINGLE
+                ref_sys = _REFLECT_TRAVEL if has_travel_plan else _REFLECT_GENERAL
                 reflection_prompt = [
                     {"role": "system", "content": ref_sys},
                     {"role": "user", "content": f"Query: {user_query}\n\nDraft:\n{last_answer}"},
@@ -1276,6 +1417,17 @@ class PlanPilotAgent:
                     self.last_metrics["reflection_output_tokens"] = self.last_metrics["output_tokens"] - pre_ref_out
 
             # --- POST-GENERATION QUALITY GATE ---
+            # Clean up any leftover tool JSON or XML prefixes from raw text tool-calling models
+            clean_answer = final_answer.strip()
+            clean_answer = re.sub(r"<tool_call>[\s\S]*?</tool_call>", "", clean_answer, flags=re.IGNORECASE).strip()
+            clean_answer = re.sub(r"<function[=\s][\s\S]*?</function>", "", clean_answer, flags=re.IGNORECASE).strip()
+            if clean_answer.startswith(("[[{", "[{", "```json", "`{", "{\"name\":", "[{\"name\":")):
+                # Extract markdown prose following the JSON block
+                lines = clean_answer.splitlines()
+                prose_lines = [l for l in lines if not l.strip().startswith(("[", "{", "]", "}", "```", "`", "\"name\":", "\"parameters\":", "\"arguments\":"))]
+                clean_answer = "\n".join(prose_lines).strip()
+            final_answer = clean_answer
+
             if has_travel_plan and not is_single_tool_query:
                 final_answer = validate_and_enforce_sections(final_answer, reqs, tool_context)
 
@@ -1292,10 +1444,20 @@ class PlanPilotAgent:
             # Remove any temporary system messages we added during this turn
             self.messages = [m for idx, m in enumerate(self.messages) if m.get("role") != "system" or idx == 0]
 
-            # Phase 3: Cache the final response
-            if self._response_cache_enabled:
-                global_cache.set(cache_key, final_answer, ttl_seconds=3600.0)
-                logger.info(f"[Phase 3] Cached response for query: {user_query[:50]}...")
+            # Phase 3: Cache the final response only if it is a valid, high-quality prose response
+            is_valid_cacheable_response = (
+                self._response_cache_enabled
+                and bool(final_answer and len(final_answer.strip()) > 30)
+                and not final_answer.strip().startswith(("[", "{", "`", "<", "Error", "I encountered an error", "Data unavailable"))
+                and "<tool_call>" not in final_answer
+                and "<function" not in final_answer
+                and "Transport route data unavailable" not in final_answer
+                and "No hotel information available" not in final_answer
+                and "No restaurant recommendations available" not in final_answer
+            )
+            if is_valid_cacheable_response:
+                global_cache.set(cache_key, final_answer, fresh_ttl=3600.0)
+                logger.info(f"[Phase 3] Cached valid response for query: {user_query[:50]}...")
 
             if hasattr(self, "last_metrics") and self.last_metrics is not None:
                 self.last_metrics["latency_sec"] = round(time.monotonic() - start_time, 2)

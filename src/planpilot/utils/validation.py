@@ -16,18 +16,22 @@ from pydantic import BaseModel, Field
 
 
 MANDATORY_SECTIONS = [
-    "Destination Overview",
     "Weather",
-    "How to Reach",
-    "Estimated Budget",
-    "Accommodation Options",
-    "Restaurants",
+    "Best Travel Route",
+    "Hotel Accommodations",
+    "Famous Restaurants",
     "Upcoming Events",
-    "History of Destination",
     "Recommended Books",
-    "Suggested Itinerary",
-    "Travel Tips",
 ]
+
+SECTION_PATTERNS = {
+    "Weather": re.compile(r'#+\s*(?:Current\s+)?Weather', re.IGNORECASE),
+    "Best Travel Route": re.compile(r'#+\s*(?:Best\s+)?(?:Travel\s+Route|How\s+to\s+Reach|Route|Transit)', re.IGNORECASE),
+    "Hotel Accommodations": re.compile(r'#+\s*(?:Hotel\s+)?Accommodations?|#+\s*(?:Budget\s+)?Hotels?|#+\s*Stay', re.IGNORECASE),
+    "Famous Restaurants": re.compile(r'#+\s*(?:Famous\s+)?Restaurants?|#+\s*Dining|#+\s*Food(?:\s+Options)?', re.IGNORECASE),
+    "Upcoming Events": re.compile(r'#+\s*(?:Upcoming\s+)?(?:Music\s+(?:&|or)\s+Live\s+)?Events?|#+\s*Activities', re.IGNORECASE),
+    "Recommended Books": re.compile(r'#+\s*(?:Recommended\s+)?Books?|#+\s*(?:Destination\s+)?History\s+Books?|#+\s*Books\s*&\s*History', re.IGNORECASE),
+}
 
 
 class UserRequirements(BaseModel):
@@ -337,66 +341,37 @@ def validate_and_enforce_sections(
     reqs: UserRequirements,
     tool_context: dict[str, Any] | None = None,
 ) -> str:
-    """Quality Gate: Verifies that all 11 mandatory sections exist in the response.
+    """Enforce that all 6 tool-grounded sections are present without duplicate boilerplate."""
+    dest = reqs.destination or "Destination"
+    origin = reqs.origin or "Origin"
+    cuisine = reqs.cuisine or "Local"
 
-    Strictly grounded in tool outputs: if tool data is missing, outputs clear
-    unavailability statements instead of generating substitute fake information.
-    """
-    tool_context = tool_context or {}
-    dest = reqs.destination.title() if reqs.destination else "Destination"
-    origin = reqs.origin.title() if reqs.origin else "Your Origin City"
-    cuisine = reqs.cuisine or "Local & Multi-Cuisine"
-
-    # Check for presence of each section header (# <Section>)
+    # Check for presence of each section using flexible regex
     missing_sections = []
-    for section_name in MANDATORY_SECTIONS:
-        pattern = re.compile(rf'#+\s*{re.escape(section_name)}', re.IGNORECASE)
+    for section_name, pattern in SECTION_PATTERNS.items():
         if not pattern.search(response_text):
             missing_sections.append(section_name)
 
     if not missing_sections:
-        # Do not claim that every tool was used when a complete answer was
-        # produced from only part of the requested data.
-        return response_text
-        # Append Tools Used block if not already present
-        if "Tools Used" not in response_text and "### Tools Used" not in response_text:
-            response_text += "\n\n### Tools Used\n✓ travel_route\n✓ get_weather\n✓ find_budget_hotels\n✓ famous_restaurants\n✓ discover_events\n✓ search_books"
         return response_text
 
-    # Synthesize missing sections using strictly grounded data
+    # Synthesize missing sections using strictly grounded tool data
     synthesized_parts = [response_text.strip()]
 
     for sec in missing_sections:
-        if sec == "Destination Overview":
-            synthesized_parts.insert(0, f"# Destination Overview\n{dest} is the target travel destination for this itinerary.")
-        elif sec == "Weather":
+        if sec == "Weather":
             w_str = validate_weather_presentation(tool_context.get("weather", {}), reqs.travel_dates)
             synthesized_parts.append(f"# Weather\n{w_str}")
-        elif sec == "How to Reach":
+        elif sec == "Best Travel Route":
             route = tool_context.get("route", {})
             if route and "error" not in route:
                 dur = route.get("travel_time", "Flight")
                 rec = route.get("recommended_mode", "Flight")
                 dist = route.get("distance_km", "")
-                synthesized_parts.append(f"# How to Reach\n- **From**: {origin}\n- **To**: {dest}\n- **Distance**: {dist}\n- **Recommended Mode**: {rec}\n- **Estimated Duration**: {dur}")
+                synthesized_parts.append(f"# Best Travel Route\n- **From**: {origin}\n- **To**: {dest}\n- **Distance**: {dist}\n- **Recommended Mode**: {rec}\n- **Estimated Duration**: {dur}")
             else:
-                synthesized_parts.append(f"# How to Reach\nTransport route data unavailable.")
-        elif sec == "Estimated Budget":
-            hotels = tool_context.get("hotels", [])
-            route = tool_context.get("route", {})
-            h_price = hotels[0].get("price_range", "Variable") if hotels else "Data unavailable"
-            r_cost = route.get("transport_options", [{}])[0].get("approx_cost", "Variable") if route else "Data unavailable"
-            if hotels or route:
-                synthesized_parts.append(
-                    f"# Estimated Budget\n"
-                    f"- **Accommodations ({reqs.budget_level.title()})**: {h_price}\n"
-                    f"- **Transit ({origin} to {dest})**: {r_cost}\n"
-                    f"- **Food & Local Expense**: Estimated based on {reqs.budget_level.title()} tier.\n"
-                    f"- **Budget Status**: Grounded in retrieved hotel & transit quotes."
-                )
-            else:
-                synthesized_parts.append(f"# Estimated Budget\nBudget estimate unavailable (tool data missing).")
-        elif sec == "Accommodation Options":
+                synthesized_parts.append(f"# Best Travel Route\nTransport route data unavailable.")
+        elif sec == "Hotel Accommodations":
             hotels = tool_context.get("hotels", [])
             valid_hotels = [h for h in hotels if "error" not in h]
             if valid_hotels:
@@ -404,20 +379,20 @@ def validate_and_enforce_sections(
                 for h in valid_hotels[:5]:
                     v_h = validate_hotel_entry(h)
                     table_lines.append(f"| {v_h['hotel_name']} | {v_h['hotel_class']} | {v_h['review_rating']} | {v_h['area']} | {v_h['price_range']} |")
-                synthesized_parts.append(f"# Accommodation Options\n" + "\n".join(table_lines))
+                synthesized_parts.append(f"# Hotel Accommodations\n" + "\n".join(table_lines))
             else:
-                synthesized_parts.append(f"# Accommodation Options\nNo hotel information available.")
-        elif sec == "Restaurants":
+                synthesized_parts.append(f"# Hotel Accommodations\nNo hotel information available.")
+        elif sec == "Famous Restaurants":
             rests = tool_context.get("restaurants", [])
             matching = [r for r in rests if validate_restaurant_match(r, reqs.cuisine)]
             if matching:
                 r_lines = [f"- **{r['restaurant_name']}**: {r.get('speciality', 'Speciality Cuisine')} | Rating: {r.get('rating', '4.5 ⭐')} | Location: {r.get('location', dest)}" for r in matching[:5]]
-                synthesized_parts.append(f"# Restaurants\n**Cuisine Preference: {cuisine}**\n" + "\n".join(r_lines))
+                synthesized_parts.append(f"# Famous Restaurants\n**Cuisine Preference: {cuisine}**\n" + "\n".join(r_lines))
             elif rests:
                 r_lines = [f"- **{r['restaurant_name']}**: {r.get('speciality', 'Speciality')} | Location: {r.get('location', dest)}" for r in rests[:4]]
-                synthesized_parts.append(f"# Restaurants\n**Cuisine Preference: {cuisine}** (General recommendations):\n" + "\n".join(r_lines))
+                synthesized_parts.append(f"# Famous Restaurants\n**Cuisine Preference: {cuisine}** (General recommendations):\n" + "\n".join(r_lines))
             else:
-                synthesized_parts.append(f"# Restaurants\n**Cuisine Preference: {cuisine}**\nNo restaurant recommendations available for the requested cuisine.")
+                synthesized_parts.append(f"# Famous Restaurants\n**Cuisine Preference: {cuisine}**\nNo restaurant recommendations available for the requested cuisine.")
         elif sec == "Upcoming Events":
             events = tool_context.get("events", [])
             valid_events = [e for e in events if "Notice" not in e.get("source", "") and "Warning" not in e.get("source", "") and "error" not in e]
@@ -426,11 +401,6 @@ def validate_and_enforce_sections(
                 synthesized_parts.append(f"# Upcoming Events\n" + "\n".join(e_lines))
             else:
                 synthesized_parts.append(f"# Upcoming Events\nNo upcoming events found.")
-        elif sec == "History of Destination":
-            synthesized_parts.append(
-                "# History of Destination\n"
-                "Historical information was not retrieved by a dedicated source."
-            )
         elif sec == "Recommended Books":
             books = tool_context.get("books", [])
             valid_books = [b for b in books if "error" not in b and b.get("title")]
@@ -439,21 +409,5 @@ def validate_and_enforce_sections(
                 synthesized_parts.append(f"# Recommended Books\n" + "\n".join(b_lines))
             else:
                 synthesized_parts.append(f"# Recommended Books\nBook recommendations unavailable.")
-        elif sec == "Suggested Itinerary":
-            synthesized_parts.append(
-                "# Suggested Itinerary\n"
-                "An itinerary was not generated because no grounded attraction or schedule data was retrieved."
-            )
-        elif sec == "Travel Tips":
-            synthesized_parts.append(
-                "# Travel Tips\n"
-                "Confirm local transport, payment, and booking requirements with current official sources before travel."
-            )
 
-    result_full = "\n\n".join(synthesized_parts)
-    # Tool usage is tracked by the agent; this formatter must not claim every
-    # registered tool ran for an answer.
-    if False and "Tools Used" not in result_full and "### Tools Used" not in result_full:
-        result_full += "\n\n### Tools Used\n✓ travel_route\n✓ get_weather\n✓ find_budget_hotels\n✓ famous_restaurants\n✓ discover_events\n✓ search_books"
-
-    return result_full
+    return "\n\n".join(synthesized_parts)

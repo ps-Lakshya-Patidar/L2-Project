@@ -7,7 +7,9 @@ Includes resilient fallback chains and cached responses without fabricated data.
 from __future__ import annotations
 
 import html
+import json
 import math
+import pathlib
 import re
 import urllib.parse
 from typing import Any
@@ -511,9 +513,18 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
                     break
             return results if results else None
 
+    async def _fetch_curated_hotels() -> list[dict[str, Any]] | None:
+        c_key = city.lower().strip()
+        if c_key in _VERIFIED_HOTELS_DB:
+            tier_key = "luxury" if budget_tier in ("premium", "luxury", "5 star", "high") else "budget"
+            entries = _VERIFIED_HOTELS_DB[c_key].get(tier_key) or _VERIFIED_HOTELS_DB[c_key].get("budget", [])
+            return [validate_hotel_entry(dict(h, budget_tier=budget_tier)) for h in entries]
+        return None
+
     providers = [
         ("OpenStreetMap Overpass API", _fetch_openstreetmap_hotels),
         ("DuckDuckGo Search", _fetch_duckduckgo_hotels),
+        ("Curated Destination Knowledge", _fetch_curated_hotels),
     ]
 
     result, source_used = await execute_fallback_chain(
@@ -531,8 +542,39 @@ async def find_budget_hotels_data(city: str, budget: str = "low") -> list[dict[s
 
 
 # ---------------------------------------------------------------------------
-# 5. Restaurants Tool Implementation
+# 5. Curated destination knowledge — loaded from external JSON files
+#    Edit data/curated_hotels.json or data/curated_restaurants.json to update.
+#    No prices or ratings stored here; those change and belong in the JSON.
 # ---------------------------------------------------------------------------
+
+def _load_curated_json(filename: str) -> dict:
+    """Load a curated-data JSON file from the project's data/ directory.
+
+    Resolution order:
+      1. <repo-root>/data/<filename>   (3 parents above src/planpilot/tools/)
+      2. <repo-root>/data/<filename>   (2 parents — editable-install fallback)
+    Returns {} gracefully on any IO / parse error.
+    """
+    candidates = [
+        pathlib.Path(__file__).resolve().parents[3] / "data" / filename,
+        pathlib.Path(__file__).resolve().parents[2] / "data" / filename,
+    ]
+    for path in candidates:
+        if path.exists():
+            try:
+                raw = json.loads(path.read_text(encoding="utf-8"))
+                raw.pop("_comment", None)   # strip the human-readable comment key
+                return raw
+            except Exception as exc:
+                logger.warning("Failed to parse %s: %s", path, exc)
+                return {}
+    logger.warning("Curated data file not found: %s (searched %s)", filename, candidates)
+    return {}
+
+
+# Loaded once at import time — lowercase city keys, no prices/ratings.
+_VERIFIED_HOTELS_DB: dict[str, dict[str, list[dict[str, Any]]]] = _load_curated_json("curated_hotels.json")
+_VERIFIED_RESTAURANTS_DB: dict[str, list[dict[str, Any]]] = _load_curated_json("curated_restaurants.json")
 
 
 async def famous_restaurants_data(city: str, query: str | None = None) -> list[dict[str, Any]]:
@@ -625,10 +667,30 @@ async def famous_restaurants_data(city: str, query: str | None = None) -> list[d
                     break
             return results if results else None
 
-    providers = [
-        ("OpenStreetMap Overpass API", _fetch_openstreetmap_restaurants),
-        ("DuckDuckGo Search", _fetch_duckduckgo_restaurants),
-    ]
+    async def _fetch_curated_restaurants() -> list[dict[str, Any]] | None:
+        c_key = city.lower().strip()
+        if c_key in _VERIFIED_RESTAURANTS_DB:
+            curated = _VERIFIED_RESTAURANTS_DB[c_key]
+            if query:
+                q_clean = query.lower()
+                matched = [r for r in curated if any(k in r["speciality"].lower() or k in r["why_popular"].lower() for k in q_clean.split())]
+                return matched if matched else curated
+            return curated
+        return None
+
+    # If a specific cuisine query is requested (e.g. 'Indian food'), prioritize targeted web search
+    if query:
+        providers = [
+            ("DuckDuckGo Search", _fetch_duckduckgo_restaurants),
+            ("OpenStreetMap Overpass API", _fetch_openstreetmap_restaurants),
+            ("Curated Culinary Knowledge", _fetch_curated_restaurants),
+        ]
+    else:
+        providers = [
+            ("OpenStreetMap Overpass API", _fetch_openstreetmap_restaurants),
+            ("DuckDuckGo Search", _fetch_duckduckgo_restaurants),
+            ("Curated Culinary Knowledge", _fetch_curated_restaurants),
+        ]
 
     result, source_used = await execute_fallback_chain(
         providers,

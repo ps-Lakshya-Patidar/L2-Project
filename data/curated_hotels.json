@@ -1,0 +1,285 @@
+{
+  "_comment": "Curated fallback hotel data. No prices or ratings - those change. Edit here without touching source code.",
+  "udaipur": {
+    "luxury": [
+      {
+        "hotel_name": "The Oberoi Udaivilas",
+        "location": "Haridas Ji Ki Magri, Lake Pichola",
+        "hotel_class": "5-Star Luxury Palace Resort",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Taj Lake Palace",
+        "location": "Lake Pichola Island",
+        "hotel_class": "5-Star Heritage Palace",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Leela Palace Udaipur",
+        "location": "Lake Pichola Waterfront",
+        "hotel_class": "5-Star Ultra Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Fateh Prakash Palace",
+        "location": "The City Palace Complex",
+        "hotel_class": "5-Star Heritage Grand Palace",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Trident Udaipur",
+        "location": "Haridas Ji Ki Magri",
+        "hotel_class": "5-Star Premium Resort",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "Jagat Niwas Palace Hotel",
+        "location": "Lal Ghat, Lake Pichola",
+        "hotel_class": "Heritage Boutique Haveli",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Zostel Udaipur",
+        "location": "Purohit Ji Ka Khurra, Chandpole",
+        "hotel_class": "Backpacker Hostel / Budget Dorms",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Moustache Udaipur",
+        "location": "Near Jagdish Temple, Chandpole",
+        "hotel_class": "Boutique Hostel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Hotel Minerwa",
+        "location": "Gangaur Ghat Marg",
+        "hotel_class": "Budget Lake View Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  },
+  "new york": {
+    "luxury": [
+      {
+        "hotel_name": "The Plaza Hotel",
+        "location": "Fifth Avenue at Central Park South",
+        "hotel_class": "5-Star Iconic Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The St. Regis New York",
+        "location": "Two East 55th Street at Fifth Avenue",
+        "hotel_class": "5-Star Landmark Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Carlyle, A Rosewood Hotel",
+        "location": "35 East 76th Street, Upper East Side",
+        "hotel_class": "5-Star Classic Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "The Jane Hotel",
+        "location": "113 Jane Street, West Village",
+        "hotel_class": "Historic Boutique Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Pod 39 Hotel",
+        "location": "145 East 39th Street, Murray Hill",
+        "hotel_class": "Modern Micro-Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Freehand New York",
+        "location": "23 Lexington Avenue, Flatiron",
+        "hotel_class": "Artistic Boutique Hotel / Dorms",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "HI New York City Hostel",
+        "location": "891 Amsterdam Avenue, Upper West Side",
+        "hotel_class": "Backpacker Hostel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  },
+  "jaipur": {
+    "luxury": [
+      {
+        "hotel_name": "Rambagh Palace",
+        "location": "Bhawani Singh Road",
+        "hotel_class": "5-Star Heritage Palace",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Oberoi Rajvilas",
+        "location": "Goner Road",
+        "hotel_class": "5-Star Luxury Resort",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Jai Mahal Palace",
+        "location": "Jacob Road, Civil Lines",
+        "hotel_class": "5-Star Heritage Palace",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "Hotel Pearl Palace",
+        "location": "Hathroi Fort, Ajmer Road",
+        "hotel_class": "Heritage Budget Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Zostel Jaipur",
+        "location": "Hawa Mahal Marg, Badi Choupad",
+        "hotel_class": "Backpacker Hostel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  },
+  "ahmedabad": {
+    "luxury": [
+      {
+        "hotel_name": "The House of MG",
+        "location": "Opp. Sidi Saiyyed Mosque, Lal Darwaja",
+        "hotel_class": "Heritage Grand Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "ITC Narmada",
+        "location": "Judges Bungalow Road, Vastrapur",
+        "hotel_class": "5-Star Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Hyatt Regency Ahmedabad",
+        "location": "Ashram Road",
+        "hotel_class": "5-Star Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "Hotel Volga",
+        "location": "Relief Road, City Centre",
+        "hotel_class": "Budget City Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Cloud Hotel",
+        "location": "Khokhra Circle, Maninagar",
+        "hotel_class": "3-Star Comfort Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  },
+  "mumbai": {
+    "luxury": [
+      {
+        "hotel_name": "The Taj Mahal Palace",
+        "location": "Apollo Bunder, Colaba",
+        "hotel_class": "5-Star Heritage Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Oberoi Mumbai",
+        "location": "Nariman Point",
+        "hotel_class": "5-Star Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Four Seasons Hotel Mumbai",
+        "location": "Dr E Moses Road, Worli",
+        "hotel_class": "5-Star Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "Zostel Mumbai",
+        "location": "Colaba Causeway, Colaba",
+        "hotel_class": "Backpacker Hostel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Hotel Suba Palace",
+        "location": "Battery Street, Colaba",
+        "hotel_class": "Budget Heritage Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  },
+  "delhi": {
+    "luxury": [
+      {
+        "hotel_name": "The Imperial New Delhi",
+        "location": "Janpath, Connaught Place",
+        "hotel_class": "5-Star Heritage Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Leela Palace New Delhi",
+        "location": "Diplomatic Enclave, Chanakyapuri",
+        "hotel_class": "5-Star Ultra Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "ITC Maurya",
+        "location": "Sardar Patel Marg, Diplomatic Enclave",
+        "hotel_class": "5-Star Luxury Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "Zostel Delhi",
+        "location": "Paharganj, Near New Delhi Railway Station",
+        "hotel_class": "Backpacker Hostel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Hotel Blue Stone",
+        "location": "Karol Bagh",
+        "hotel_class": "Budget Hotel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  },
+  "goa": {
+    "luxury": [
+      {
+        "hotel_name": "Taj Exotica Resort and Spa",
+        "location": "Calwaddo, Benaulim, South Goa",
+        "hotel_class": "5-Star Luxury Beach Resort",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "The Leela Goa",
+        "location": "Mobor, Cavelossim, South Goa",
+        "hotel_class": "5-Star Luxury Beach Resort",
+        "source": "Curated Travel Knowledge"
+      }
+    ],
+    "budget": [
+      {
+        "hotel_name": "Zostel Goa Arambol",
+        "location": "Arambol Beach, North Goa",
+        "hotel_class": "Backpacker Hostel",
+        "source": "Curated Travel Knowledge"
+      },
+      {
+        "hotel_name": "Moustache Goa",
+        "location": "Vagator, North Goa",
+        "hotel_class": "Boutique Hostel",
+        "source": "Curated Travel Knowledge"
+      }
+    ]
+  }
+}

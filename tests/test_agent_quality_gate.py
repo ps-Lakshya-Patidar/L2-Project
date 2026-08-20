@@ -4,8 +4,8 @@ import pytest
 from planpilot.utils.validation import UserRequirements, validate_and_enforce_sections
 
 
-def test_quality_gate_enforces_all_11_sections():
-    draft = "# Destination Overview\nOverview text\n"
+def test_quality_gate_enforces_all_6_sections():
+    draft = "# Weather\nWeather text\n"
     reqs = UserRequirements(origin="Indore", destination="Paris")
     tool_context = {
         "destination": "Paris",
@@ -19,17 +19,13 @@ def test_quality_gate_enforces_all_11_sections():
 
     result = validate_and_enforce_sections(draft, reqs, tool_context)
     sections = [
-        "# Destination Overview",
         "# Weather",
-        "# How to Reach",
-        "# Estimated Budget",
-        "# Accommodation Options",
-        "# Restaurants",
+        "# Best Travel Route",
+        "# Hotel Accommodations",
+        "# Famous Restaurants",
         "# Upcoming Events",
-        "# History of Destination",
         "# Recommended Books",
-        "# Suggested Itinerary",
-        "# Travel Tips",
     ]
     for sec in sections:
         assert sec in result
+

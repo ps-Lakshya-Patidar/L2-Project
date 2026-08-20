@@ -5,7 +5,7 @@ import json
 import random
 import time
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Tuple, TypeVar
+from typing import Any, Awaitable, Callable, TypeVar
 import httpx
 from planpilot.utils.logger import logger
 

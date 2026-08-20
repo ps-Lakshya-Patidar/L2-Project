@@ -98,6 +98,47 @@ async def run_agent_interactive(agent: PlanPilotAgent, query: str) -> None:
                 padding=(1, 2),
             )
         )
+
+        m = getattr(agent, "last_metrics", None)
+        if m:
+            in_tok = m.get("input_tokens", 0)
+            out_tok = m.get("output_tokens", 0)
+            mod = m.get("model", "").lower()
+            prov = m.get("provider", "").lower()
+
+            # Cost calculations
+            if prov == "ollama":
+                actual_str = "$0.00 (Local)"
+            elif ":free" in mod or mod == "openrouter/free":
+                actual_str = "$0.00 (Free Tier)"
+            else:
+                act_cost = (in_tok * 0.15 / 1e6) + (out_tok * 0.60 / 1e6)
+                actual_str = f"${act_cost:.6f}"
+
+            prod_in = 0.50 if any(k in mod for k in ["70b", "large", "sonnet", "gpt-4o"]) else 0.15
+            prod_out = 1.50 if any(k in mod for k in ["70b", "large", "sonnet", "gpt-4o"]) else 0.60
+            prod_cost = (in_tok * prod_in / 1e6) + (out_tok * prod_out / 1e6)
+            cost_per_1k = prod_cost * 1000
+
+            metrics_text = (
+                f"[bold cyan]📊 Evaluation Metrics[/]\n"
+                f"[dim]LLM:[/] {m.get('provider')}/{m.get('model')}  |  "
+                f"[dim]Latency:[/] {m.get('latency_sec')}s  |  "
+                f"[dim]Actual Cost:[/] {actual_str}  |  "
+                f"[bold green]Est. Production Cost:[/] ~${prod_cost:.5f} (${cost_per_1k:.2f}/1k)\n"
+                f"[dim]LLM Steps:[/] {m.get('llm_calls')}  |  "
+                f"[dim]Tool Calls:[/] {m.get('tool_calls')}  |  "
+                f"[dim]Input Tokens:[/] {in_tok}  |  "
+                f"[dim]Output Tokens:[/] {out_tok}  |  "
+                f"[dim]Total Tokens:[/] {m.get('total_tokens')}"
+            )
+            console.print(
+                Panel(
+                    metrics_text,
+                    border_style="cyan",
+                    padding=(0, 2),
+                )
+            )
         console.print("\n")
     except Exception as e:
         indicator.stop()

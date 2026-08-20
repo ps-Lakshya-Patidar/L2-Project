@@ -458,52 +458,63 @@ with tab_chat:
             "The agent will tailor all recommendations to match your vibe."
         )
 
-        def estimate_cost(provider: str, model: str, input_tok: int, output_tok: int) -> str:
+        def estimate_cost(provider: str, model: str, input_tok: int, output_tok: int) -> tuple[str, str]:
+            """Calculate both current tier cost and estimated production deployment cost."""
             prov = provider.lower().strip()
             mod = model.lower().strip()
+
+            # 1. Actual Tier Cost
             if prov == "ollama":
-                return "$0.00 (Local)"
-            if prov == "openrouter":
-                if ":free" in mod or mod == "openrouter/free":
-                    return "$0.00 (Free Tier)"
-                in_rate = 0.10
-                out_rate = 0.20
-                cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
-                return f"${cost:.6f}"
-            if prov == "gemini":
-                # Google Gemini 3.6 / 3.7 / 2.5 Flash Free Tier
-                in_rate = 0.075
-                out_rate = 0.30
-                cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
-                return f"${cost:.6f} (Free Tier)"
-            # Default Groq pricing per million tokens
-            in_rate = 0.05
-            out_rate = 0.08
-            if "70b" in mod:
-                in_rate = 0.59
-                out_rate = 0.79
-            elif "mixtral" in mod:
-                in_rate = 0.24
-                out_rate = 0.24
-            cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
-            return f"${cost:.6f}"
+                actual_str = "$0.00 (Local)"
+            elif prov == "openrouter" and (":free" in mod or mod == "openrouter/free"):
+                actual_str = "$0.00 (Free Tier)"
+            elif prov == "openrouter":
+                in_rate = 0.15 if any(k in mod for k in ["mini", "3b", "8b", "xs"]) else 0.50
+                out_rate = 0.60 if any(k in mod for k in ["mini", "3b", "8b", "xs"]) else 1.50
+                act_cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
+                actual_str = f"${act_cost:.6f}"
+            elif prov == "gemini":
+                in_rate, out_rate = 0.075, 0.30
+                act_cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
+                actual_str = f"${act_cost:.6f} (Free Tier)"
+            else:  # Groq
+                in_rate = 0.05
+                out_rate = 0.08
+                if "70b" in mod:
+                    in_rate, out_rate = 0.59, 0.79
+                elif "mixtral" in mod:
+                    in_rate, out_rate = 0.24, 0.24
+                act_cost = (input_tok * (in_rate / 1_000_000)) + (output_tok * (out_rate / 1_000_000))
+                actual_str = f"${act_cost:.6f}"
+
+            # 2. Production Equivalent Cost (Standard Cloud LLM Tier: $0.15/1M input, $0.60/1M output for fast models)
+            prod_in_rate = 0.15
+            prod_out_rate = 0.60
+            if any(k in mod for k in ["70b", "large", "sonnet", "gpt-4o", "mixtral"]):
+                prod_in_rate, prod_out_rate = 0.50, 1.50
+            prod_cost = (input_tok * (prod_in_rate / 1_000_000)) + (output_tok * (prod_out_rate / 1_000_000))
+            cost_per_1k = prod_cost * 1000
+            prod_str = f"~${prod_cost:.5f} (${cost_per_1k:.2f}/1k)"
+
+            return actual_str, prod_str
 
         for message in st.session_state.chat_history:
             with st.chat_message(message["role"]):
                 st.markdown(message["content"])
                 if message.get("role") == "assistant" and message.get("metrics"):
                     m = message["metrics"]
-                    cost_str = estimate_cost(m['provider'], m['model'], m['input_tokens'], m['output_tokens'])
+                    cost_act_str, cost_prod_str = estimate_cost(m['provider'], m['model'], m['input_tokens'], m['output_tokens'])
                     st.markdown(
                         f"""
                         <div style="background-color: rgba(139, 92, 246, 0.05); border: 1px solid rgba(139, 92, 246, 0.15); border-radius: 8px; padding: 10px; margin-top: 10px; font-size: 0.85rem;">
                             <div style="font-weight: 600; color: #a78bfa; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
                                 📊 Evaluation Metrics
                             </div>
-                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px;">
+                            <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;">
                                 <div><b>LLM:</b> <code>{m['provider']}/{m['model']}</code></div>
                                 <div><b>Latency:</b> <code>{m['latency_sec']}s</code></div>
-                                <div><b>Cost:</b> <code>{cost_str}</code></div>
+                                <div><b>Actual Cost:</b> <code>{cost_act_str}</code></div>
+                                <div><b>Est. Production Cost:</b> <code style="color: #10b981;">{cost_prod_str}</code></div>
                                 <div><b>LLM Steps:</b> <code>{m['llm_calls']}</code></div>
                                 <div><b>Tool Calls:</b> <code>{m['tool_calls']}</code></div>
                                 <div><b>Input Tokens:</b> <code>{m['input_tokens']}</code></div>
@@ -590,7 +601,7 @@ with tab_chat:
                     })
                     
                     if metrics_to_save:
-                        cost_val_str = estimate_cost(
+                        cost_act_val, cost_prod_val = estimate_cost(
                             metrics_to_save['provider'],
                             metrics_to_save['model'],
                             metrics_to_save['input_tokens'],
@@ -602,10 +613,11 @@ with tab_chat:
                                 <div style="font-weight: 600; color: #a78bfa; margin-bottom: 6px; display: flex; align-items: center; gap: 6px;">
                                     📊 Evaluation Metrics
                                 </div>
-                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 8px;">
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px;">
                                     <div><b>LLM:</b> <code>{metrics_to_save['provider']}/{metrics_to_save['model']}</code></div>
                                     <div><b>Latency:</b> <code>{metrics_to_save['latency_sec']}s</code></div>
-                                    <div><b>Cost:</b> <code>{cost_val_str}</code></div>
+                                    <div><b>Actual Cost:</b> <code>{cost_act_val}</code></div>
+                                    <div><b>Est. Production Cost:</b> <code style="color: #10b981;">{cost_prod_val}</code></div>
                                     <div><b>LLM Steps:</b> <code>{metrics_to_save['llm_calls']}</code></div>
                                     <div><b>Tool Calls:</b> <code>{metrics_to_save['tool_calls']}</code></div>
                                     <div><b>Input Tokens:</b> <code>{metrics_to_save['input_tokens']}</code></div>

@@ -6,33 +6,34 @@ PlanPilot is a stateful AI travel planning agent powered by **OpenRouter** (defa
 
 ## ✨ Key Features & Capability Matrix
 
-- **🤖 Multi-LLM Provider Support**: Powered by **OpenRouter** (access to free models like `openrouter/free`, `meta-llama/llama-3.3-70b-instruct:free`, `deepseek/deepseek-r1:free`) and local **Ollama** (`llama3.2:3b`).
-- **🏨 Spatial Hotel Discovery (`find_budget_hotels`)**: Queries OpenStreetMap (OSM) Overpass API (`node["tourism"~"hotel|hostel|guest_house"]`) for live stays. Supports dynamic budget tiers (`low`, `mid-range`, `premium`, `luxury`).
-- **🛣️ Real-World Route & Geocoding (`travel_route`)**: Validates real-world cities on Earth via Open-Meteo geocoding. Rejects fake/gibberish cities (`asdfgh`, `qwerty`). Computes Haversine Great Circle distances, travel times, transport modes (Train, Bus, Flight, Drive), intercontinental trans-oceanic flight routing, and route summaries.
-- **🍽️ Spatial Restaurant Discovery (`famous_restaurants`)**: Uses OpenStreetMap Overpass API (`node["amenity"="restaurant"]["name"]`) and curated heritage dining spots to return authentic local restaurants, cuisines, dietary filters (`vegetarian`, `vegan`, `Italian`), and street addresses.
+- **🤖 Multi-LLM Provider Support**: Powered by **OpenRouter** (free models like `meta-llama/llama-3.3-70b-instruct:free`, `deepseek/deepseek-r1:free`, `nvidia/nemotron-super-120b:free`) and local **Ollama** (`llama3.2:3b`). Automatically falls back across providers.
+- **🏨 Hotel Discovery with 3-Tier Fallback (`find_budget_hotels`)**: Queries OpenStreetMap Overpass API → DuckDuckGo Search → **Curated Destination Knowledge** (7 cities, never fabricated). Supports budget tiers: `low`, `mid-range`, `premium`, `luxury`.
+- **🛣️ Real-World Route & Geocoding (`travel_route`)**: Validates real-world cities via Open-Meteo geocoding. Rejects fake/gibberish city names. Computes Haversine Great Circle distances, travel times, transport modes (Train, Bus, Flight, Drive), and intercontinental routing.
+- **🍽️ Restaurant Discovery with 3-Tier Fallback (`famous_restaurants`)**: OpenStreetMap → DuckDuckGo → **Curated Culinary Knowledge** (7 cities, cuisine-filtered, never fabricated). Supports dietary filters (`vegetarian`, `vegan`, `Indian`, etc.).
 - **🌤️ Smart Weather Forecasts (`get_weather`)**: Connects to the Open-Meteo API to retrieve current conditions and 12-hour precipitation forecasts.
-- **📚 Reliable Book Recommendations (`search_books`)**: Direct query to the Open Library API to find books by topic, title, or author with clickable links.
-- **🎟️ Live Event Discovery (`discover_events`)**: Locates concerts, exhibitions, or cultural activities for any city via SerpAPI and DuckDuckGo.
-- **🧠 JSON Profile Memory & Departure City Fallback**: Stores user preferences in `PlanPilot/data/user_preferences.json`. When a prompt omits the departure city (e.g., `"Plan a 3-day trip to Jaipur"`), it automatically retrieves `home_city` from JSON memory.
-- **📊 Evaluation Metrics & Telemetry Engine**: Tracks token usage (`tiktoken` / API metadata), millisecond latency (`time.monotonic()`), step counts, and real-time cost estimations based on model pricing grids in the Streamlit UI. Automated suite testing via **`pytest`**.
-- **🌐 Interactive Streamlit Portal**: Features dynamic provider & model dropdown selectors (OpenRouter, Ollama), travel vibe goals, profile editing, and live trace logs.
+- **📚 Book Recommendations (`search_books`)**: Direct query to the Open Library API to find books by topic, title, or author with clickable links.
+- **🎟️ Live Event Discovery (`discover_events`)**: Locates concerts, exhibitions, or cultural activities for any city via DuckDuckGo.
+- **🧠 JSON Profile Memory & Departure City Fallback**: Stores user preferences in `data/user_preferences.json`. When a prompt omits the departure city, it automatically retrieves `home_city` from JSON memory.
+- **🔀 XML Tool-Call Parser (Nemotron / Qwen compatible)**: Parses `<tool_call>`, `<function=name>`, `<parameter=key>` XML syntax emitted by some free OpenRouter models — no tool calls leak into the final answer.
+- **🛡️ Hardened Response Cache**: Never caches raw tool call leaks, `"Data unavailable"`, `"No hotel information"`, or responses under 30 characters. Disk cache with strict per-destination keys prevents cross-query pollution.
+- **📊 Evaluation Metrics & Telemetry**: Tracks token usage, millisecond latency, step counts, actual API cost, and **estimated production cost** (if scaled to paid models) — visible in both the CLI and Streamlit UI.
+- **🌐 Interactive Streamlit Portal**: Dynamic provider & model selectors, travel vibe goals, profile editing, and live trace logs.
 
 ---
 
-## 📐 Evaluation Metrics & Telemetry Tools
+## 📐 Evaluation Metrics
 
-PlanPilot monitors and evaluates performance using the following tools and libraries:
-
-1. **Token Usage Metrics**: Extracted from LLM provider metadata (`prompt_tokens`, `completion_tokens`, `total_tokens`) or computed via **`tiktoken`**.
-2. **Step Count & Latency Telemetry**: Measured per tool call and per reasoning step using Python's native **`time.monotonic()`** module inside async status callbacks.
-3. **Real-time Cost Estimation Engine**: Calculated dynamically using model rate cards configured in `streamlit_app.py`.
-4. **Unit Testing & Code Quality Suite**: Automated unit tests built with **`pytest`** (`tests/test_preferences.py`).
+| Metric | How it's measured |
+|---|---|
+| **Token Usage** | `prompt_tokens` / `completion_tokens` from API metadata or `tiktoken` |
+| **Latency** | `time.monotonic()` per tool call and per reasoning step |
+| **Actual Cost** | Live API cost from OpenRouter usage headers |
+| **Est. Production Cost** | Estimated cost if run on GPT-4o / Claude 3.5 Sonnet pricing |
+| **Step Count** | Number of tool calls + reflection passes per query |
 
 ---
 
 ## 🏗️ Architecture
-
-PlanPilot uses a client-server architecture based on the Model Context Protocol (MCP) over `stdio` transport.
 
 ```
 User ──► CLI / Streamlit UI
@@ -40,160 +41,191 @@ User ──► CLI / Streamlit UI
               ▼
     Stateful Agent Loop (planpilot.agent) ◄──► data/user_preferences.json
               │
-       ┌───────┴───────┐
-       ▼               ▼
-  OpenRouter /        MCP Client Session
-  Ollama              │ (stdio transport protocol)
-                       ▼
-                MCP Subprocess (planpilot.mcp_server)
-                       │
-                       ▼
-              Registered MCP Tools (6 Total):
-              - get_weather         - find_budget_hotels
-              - search_books        - travel_route
-              - discover_events     - famous_restaurants
-                       │
-                       ▼
-              External APIs / Services:
-              (Open-Meteo, OpenStreetMap Overpass, Open Library, SerpAPI, DuckDuckGo)
-```
-     External APIs / Services:
-              (Open-Meteo, OpenStreetMap Overpass, Open Library, SerpAPI, DuckDuckGo)
+       ┌──────┴──────────────────┐
+       ▼                         ▼
+ OpenRouter / Ollama        MCP Client Session
+ (XML + JSON tool parsers)  (stdio transport)
+                                 │
+                                 ▼
+                      MCP Subprocess (planpilot.mcp_server)
+                                 │
+                     ┌───────────┼───────────┐
+                     ▼           ▼           ▼
+              Overpass API   DuckDuckGo   Curated JSON
+              (OSM hotels,   (search      (data/curated_hotels.json
+               restaurants)   fallback)    data/curated_restaurants.json)
+                     │
+                     ▼
+           Other Free APIs:
+           Open-Meteo · Open Library · DuckDuckGo Events
 ```
 
 ---
 
-## 🔌 MCP Tool API Reference (6 Active Tools)
-
-PlanPilot exposes 6 active tool interfaces on the MCP Server:
+## 🔌 MCP Tool Reference (6 Active Tools)
 
 ### 1. `find_budget_hotels`
-Search for budget, mid-range, or luxury hotels and accommodations.
 ```json
-{
-  "city": "Jaipur",
-  "budget": "low | mid-range | premium | luxury"
-}
+{ "city": "New York", "budget": "low | mid-range | premium | luxury" }
 ```
+Fallback chain: **OpenStreetMap Overpass → DuckDuckGo → Curated Hotels JSON**
 
-### 2. `travel_route`
-Calculate real-world distance (Haversine), travel durations, and transport options between two cities. Rejects fake/gibberish city names.
+### 2. `famous_restaurants`
 ```json
-{
-  "source": "Ahmedabad",
-  "destination": "Jaipur"
-}
+{ "city": "Udaipur", "query": "Indian food" }
 ```
+Fallback chain: **OpenStreetMap Overpass → DuckDuckGo → Curated Restaurants JSON**
 
-### 3. `famous_restaurants`
-Discover famous local dining spots, bistros, and regional specialities using OpenStreetMap Overpass API.
+### 3. `travel_route`
 ```json
-{
-  "city": "Indore"
-}
+{ "source": "Ahmedabad", "destination": "New York" }
 ```
+Real geocoding validation — rejects fake cities. Haversine distance + transport modes.
 
 ### 4. `get_weather`
-Fetch current weather and 12-hour precipitation forecast for a city.
 ```json
-{
-  "city": "Paris"
-}
+{ "city": "Paris" }
 ```
+Current conditions + 12-hour precipitation forecast via Open-Meteo.
 
 ### 5. `search_books`
-Search for book recommendations and metadata using the Open Library API.
 ```json
-{
-  "query": "science fiction"
-}
+{ "query": "New York history" }
 ```
+Open Library API — real books with author, year, and clickable links.
 
 ### 6. `discover_events`
-Discover live events, exhibitions, concerts, or activities happening in a city.
 ```json
-{
-  "city": "Mumbai"
-}
+{ "city": "New York", "query": "music concerts" }
 ```
+Live events via DuckDuckGo search — concerts, exhibitions, comedy shows, and more.
 
 ---
 
-## ⚙️ How the Process Works (Under the Hood)
+## ⚙️ How It Works (Under the Hood)
 
-1. **Handshake**: The agent client spawns the MCP server subprocess using stdio transport.
-2. **Preference & Departure City Auto-Resolution**: Reads `PlanPilot/data/user_preferences.json`. If a travel query specifies a destination but omits the source city, `home_city` is automatically passed as the departure location.
-3. **Reasoning Loop**: The LLM determines necessary tool calls, executes them via MCP client session, and truncates raw context (`[:1500]`) to protect against Groq 6,000 TPM rate limits.
-4. **Self-Reflection (QA) Pass**: Sends draft outputs to a reflection reviewer. Single-topic queries receive clean, direct answers; full itineraries are structured with complete markdown sections.
+1. **MCP Handshake**: The agent spawns the MCP server subprocess over `stdio` transport and registers all 6 tools.
+2. **Preference Auto-Resolution**: Reads `data/user_preferences.json`. If a query omits the departure city, `home_city` is automatically used.
+3. **Tool Call Parsing (3 Strategies)**:
+   - Strategy 1: JSON block `[{"name": ..., "arguments": {...}}]`
+   - Strategy 2: Parenthesized calls `tool_name(key=value, ...)`
+   - Strategy 3: XML tags `<tool_call><function=name><parameter=key>value</parameter></function></tool_call>` — for Nemotron/Qwen models
+4. **3-Tier Fallback**: For hotels and restaurants — OSM Overpass → DuckDuckGo → Curated JSON (guaranteed non-empty, non-fabricated response).
+5. **Response Cache Guard**: Responses are only cached if they are ≥30 characters, contain no raw tool call syntax, and are not error strings.
+6. **Self-Reflection (QA) Pass**: Draft output is reviewed for completeness. Single-topic queries get clean direct answers; full itineraries get structured markdown.
+7. **Quality Gate**: XML tags, tool call blocks, and junk strings are stripped before the final answer is shown.
 
 ---
 
-## 🚀 How to Run the Project
+## 🚀 Getting Started
 
-### 1. Installation
+### 1. Clone & Install
+
 ```bash
+git clone https://github.com/ps-Lakshya-Patidar/L2-Project.git
+cd L2-Project/PlanPilot
+
 # Create and activate virtual environment
 python -m venv .venv
-.venv\Scripts\Activate.ps1   # On Windows
+.venv\Scripts\Activate.ps1      # Windows
+# source .venv/bin/activate     # macOS / Linux
 
-# Install dependencies and editable package
+# Install dependencies and package
 pip install -r requirements.txt
 pip install -e .
 ```
 
-### 2. Configuration
-Create a `.env` file:
+### 2. Configure Environment
+
+Create a `.env` file in the `PlanPilot/` directory:
+
 ```env
-LLM_PROVIDER=groq
-GROQ_API_KEY=your_groq_api_key_here
-GROQ_MODEL=llama-3.3-70b-versatile
+# Required: OpenRouter (free tier available at openrouter.ai)
+LLM_PROVIDER=openrouter
+OPENROUTER_API_KEY=your_openrouter_api_key_here
+OPENROUTER_MODEL=meta-llama/llama-3.3-70b-instruct:free
+
+# Optional: Ollama (local, no API key needed)
+# LLM_PROVIDER=ollama
+# OLLAMA_MODEL=llama3.2:3b
 ```
 
-### 3. Execution Commands
+> Get a free OpenRouter API key at [openrouter.ai](https://openrouter.ai) — no credit card required for free models.
 
-#### **Streamlit Web Portal**
+### 3. Run
+
+#### **Streamlit Web Portal** (recommended)
 ```bash
 planpilot ui
-# Or: python -m streamlit run src/planpilot/ui/streamlit_app.py
+# or: python -m streamlit run src/planpilot/ui/streamlit_app.py
 ```
 
-#### **Stateful Interactive CLI REPL**
+#### **Interactive CLI REPL**
 ```bash
 planpilot query
 ```
 
-#### **Single Query Command**
+#### **Single Query**
 ```bash
-planpilot query "Plan a 3-day trip to Jaipur"
-```
-
-#### **Unit Tests**
-```bash
-python -m pytest tests/test_preferences.py
+planpilot query "Plan a trip from Ahmedabad to New York with Indian food restaurants and budget hotels"
 ```
 
 ---
 
-## 📁 File Structure Overview
+## 📁 Project Structure
 
 ```
 PlanPilot/
 ├── data/
-│   └── user_preferences.json    # Persistent user JSON profile
-├── docs/
-│   ├── API_DOCUMENTATION.md      # Full API reference guide
-│   ├── PROJECT_PRESENTATION_GUIDE.md
-│   └── REVIEW_PREPARATION.md
+│   ├── curated_hotels.json       # Verified hotels for 7 cities (no prices/ratings)
+│   ├── curated_restaurants.json  # Verified restaurants for 7 cities
+│   └── user_preferences.json     # Your personal profile (gitignored, local only)
 ├── logs/
-│   └── planpilot.log             # Application execution logs
+│   └── planpilot.log             # Application logs (gitignored)
 ├── src/
 │   └── planpilot/
-│       ├── agent/                # Agent loop & reflection QA pass
-│       ├── mcp_server/           # Stdio MCP Server tool registry
-│       ├── tools/                # Service implementations & APIs
+│       ├── agent/                # Agent loop, tool parser, reflection QA, cache
+│       ├── mcp_server/           # Stdio MCP Server + tool registry
+│       ├── tools/                # Service implementations (hotels, restaurants, weather…)
 │       ├── ui/                   # Streamlit web portal
-│       └── utils/                # Config, Logger, Preferences
-├── tests/                        # Pytest suite
+│       └── utils/                # Config, Logger, Resilience cache, Validation
+├── .env                          # Your API keys (gitignored)
+├── .env.example                  # Template for .env
 ├── README.md
+├── requirements.txt
 └── pyproject.toml
 ```
+
+> **Note:** `docs/` and `tests/` folders exist locally for development reference but are excluded from the repository — they are not needed to run the project.
+
+---
+
+## 🗺️ Supported Destinations (Curated Fallback)
+
+Hotels and restaurants have verified curated data (no fabrication) for:
+
+| Destination | Hotels | Restaurants |
+|---|---|---|
+| 🇮🇳 Udaipur | ✅ Luxury + Budget | ✅ Rajasthani & Mewari |
+| 🇺🇸 New York | ✅ Luxury + Budget | ✅ Indian + NYC Classics |
+| 🇮🇳 Jaipur | ✅ Luxury + Budget | ✅ Rajasthani Royal |
+| 🇮🇳 Ahmedabad | ✅ Luxury + Budget | ✅ Gujarati Thali |
+| 🇮🇳 Mumbai | ✅ Luxury + Budget | ✅ Coastal & Street Food |
+| 🇮🇳 Delhi | ✅ Luxury + Budget | ✅ Mughlai & Modern Indian |
+| 🇮🇳 Goa | ✅ Luxury + Budget | ✅ Goan & Portuguese Fusion |
+
+For all other cities, live OSM and DuckDuckGo data is used.
+
+---
+
+## 📦 Requirements
+
+- Python 3.11+
+- An OpenRouter API key (free tier: [openrouter.ai](https://openrouter.ai)) **or** Ollama installed locally
+- Internet connection (for weather, routes, events, books, and live hotel/restaurant search)
+
+---
+
+## 📄 License
+
+MIT © Lakshya Patidar
